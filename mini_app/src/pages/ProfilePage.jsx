@@ -52,7 +52,7 @@ const TOPICS = [
 ];
 
 // ── main ────────────────────────────────────────────────────
-export default function ProfilePage({ user, setUser }) {
+export default function ProfilePage({ user, setUser, onGoToChats }) {
   const [fireScore, setFireScore]   = useState(null);
   const [doneTopic, setDoneTopic]   = useState(new Set());
   const [questions, setQuestions]   = useState([]);
@@ -201,6 +201,18 @@ export default function ProfilePage({ user, setUser }) {
           {totalAnswers > 0 && (
             <div className="pf-rating">⭐ {answerScore} <span className="pf-rating-sub">из {totalAnswers}</span></div>
           )}
+          <button
+            onClick={onGoToChats}
+            style={{
+              marginTop: 6,
+              background: "#2a9d8f", border: "none", color: "#fff",
+              borderRadius: 20, padding: "5px 12px",
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}
+          >
+            💬 Написать друзьям
+          </button>
         </div>
       </div>
 

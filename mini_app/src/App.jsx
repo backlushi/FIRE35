@@ -187,7 +187,7 @@ export default function App() {
   return (
     <div className="app">
       <div className="content">
-        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} />}
+        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} onGoToChats={() => setTab("members")} />}
         {tab === "members"      && <MembersPage user={user} />}
         {tab === "questions"    && <QuestionsPage user={user} />}
         {tab === "achievements" && <AchievementsPage user={user} />}
