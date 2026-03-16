@@ -3465,11 +3465,12 @@ def chats_list(
             Message.read_at.is_(None),
         ).count()
         last = last_msgs.get(fid)
+        skills = [s.skill_name for s in partner.skills_list[:2]]
         result.append({
             "pid": partner.pid,
             "first_name": partner.first_name or partner.pid,
             "last_name": partner.last_name or "",
-            "telegram_username": partner.telegram_username or "",
+            "skills": skills,
             "last_message": last.content if last else None,
             "last_message_mine": (last.sender_id == user.id) if last else None,
             "last_time": last.created_at.strftime("%H:%M") if last else None,

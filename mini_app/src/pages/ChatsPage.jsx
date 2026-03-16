@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
-import ChatPage from "./ChatPage";
+import RecoPage from "./RecoPage";
 
 const AVATAR_COLORS = [
   "#FF6B6B","#4ECDC4","#45B7D1","#FFA07A",
@@ -12,10 +12,147 @@ function pidColor(pid) {
   return AVATAR_COLORS[n % AVATAR_COLORS.length];
 }
 
-export default function ChatsPage({ user }) {
+// ── Компонент чата встроенный (без шапки с кнопкой назад) ──
+function InlineChat({ pid, myPid }) {
+  const [data, setData]       = useState(null);
+  const [text, setText]       = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
+  const pollRef   = useRef(null);
+
+  const load = useCallback(async (silent = false) => {
+    try {
+      const res = await api.get(`/chats/${pid}`);
+      setData(res.data);
+    } catch {}
+  }, [pid]);
+
+  useEffect(() => {
+    setData(null);
+    setText("");
+    load();
+    pollRef.current = setInterval(() => load(true), 5000);
+    return () => clearInterval(pollRef.current);
+  }, [load]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [data?.messages?.length]);
+
+  async function sendMsg() {
+    if (!text.trim() || sending) return;
+    const content = text.trim();
+    setText("");
+    setSending(true);
+    try {
+      const res = await api.post(`/chats/${pid}`, { content });
+      setData(d => d ? { ...d, messages: [...d.messages, res.data] } : d);
+    } catch {}
+    setSending(false);
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  }
+
+  const messages = data?.messages || [];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Сообщения */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px 8px 4px" }}>
+        {!data && (
+          <div style={{ textAlign: "center", color: "#aaa", marginTop: 24, fontSize: 13 }}>
+            Загрузка...
+          </div>
+        )}
+        {data && messages.length === 0 && (
+          <div style={{ textAlign: "center", color: "#bbb", marginTop: 24, fontSize: 12 }}>
+            Напишите первое сообщение
+          </div>
+        )}
+        {messages.map((m, i) => {
+          const prevDate = i > 0 ? messages[i-1].date : null;
+          return (
+            <div key={m.id}>
+              {m.date !== prevDate && (
+                <div style={{ textAlign: "center", margin: "6px 0 4px", fontSize: 10, color: "#aaa" }}>
+                  {m.date}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: m.mine ? "flex-end" : "flex-start", marginBottom: 3 }}>
+                <div style={{
+                  maxWidth: "85%",
+                  background: m.mine ? "#2a9d8f" : "#fff",
+                  color: m.mine ? "#fff" : "#222",
+                  borderRadius: m.mine ? "14px 14px 3px 14px" : "14px 14px 14px 3px",
+                  padding: "6px 10px",
+                  fontSize: 13, lineHeight: 1.4,
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.07)",
+                  wordBreak: "break-word", whiteSpace: "pre-wrap",
+                }}>
+                  {m.content}
+                  <div style={{
+                    fontSize: 9, marginTop: 2, textAlign: "right",
+                    color: m.mine ? "rgba(255,255,255,0.65)" : "#bbb",
+                    display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2,
+                  }}>
+                    {m.time}
+                    {m.mine && (
+                      <span style={{ color: m.read ? "#a8e6cf" : "rgba(255,255,255,0.45)", letterSpacing: -1 }}>
+                        {m.read ? "✓✓" : "✓"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Ввод */}
+      <div style={{
+        display: "flex", gap: 6, padding: "6px 8px",
+        background: "#fff", borderTop: "1px solid #eee", flexShrink: 0,
+      }}>
+        <textarea
+          className="input"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Сообщение..."
+          rows={1}
+          style={{
+            flex: 1, resize: "none", fontFamily: "inherit",
+            fontSize: 13, margin: 0, padding: "6px 10px",
+            maxHeight: 80, overflowY: "auto",
+          }}
+          disabled={sending}
+        />
+        <button
+          onClick={sendMsg}
+          disabled={sending || !text.trim()}
+          style={{
+            background: "#2a9d8f", border: "none", color: "#fff",
+            borderRadius: "50%", width: 34, height: 34,
+            cursor: "pointer", fontSize: 15, flexShrink: 0,
+            alignSelf: "flex-end",
+            opacity: (!text.trim() || sending) ? 0.5 : 1,
+          }}
+        >➤</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Главный компонент: split-layout ──
+export default function ChatsPage({ user, onOpenDetail }) {
   const [chats, setChats]       = useState([]);
   const [loading, setLoading]   = useState(true);
-  const [openPid, setOpenPid]   = useState(null);
+  const [selected, setSelected] = useState(null); // pid выбранного друга
+  const [showReco, setShowReco] = useState(false);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -28,69 +165,124 @@ export default function ChatsPage({ user }) {
     try {
       const res = await api.get("/chats");
       setChats(res.data);
+      // Если никто не выбран — выбираем первого с сообщениями
+      if (!selected) {
+        const first = res.data.find(c => c.last_message);
+        if (first) setSelected(first.pid);
+      }
     } catch {}
     setLoading(false);
   }
 
-  // Открыт чат — показываем ChatPage
-  if (openPid) {
-    return (
-      <ChatPage
-        pid={openPid}
-        onBack={() => { setOpenPid(null); loadChats(); }}
-      />
-    );
-  }
+  const selectedChat = chats.find(c => c.pid === selected);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Шапка */}
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
+
+      {/* ── Левая колонка: список друзей ── */}
       <div style={{
-        padding: "12px 16px 8px",
-        borderBottom: "1px solid #f0f0f0",
-        flexShrink: 0,
+        flex: "0 0 40%",
+        borderRight: "1px solid #eee",
+        display: "flex", flexDirection: "column",
+        overflow: "hidden",
       }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a2e" }}>
-          💬 Сообщения
-        </div>
-        <div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>
-          {chats.length > 0 ? `${chats.length} контакт${chats.length === 1 ? "" : chats.length < 5 ? "а" : "ов"}` : ""}
+        {/* Кнопка рекомендаций */}
+        <button
+          onClick={() => { setShowReco(v => !v); setSelected(null); }}
+          style={{
+            margin: "8px 8px 4px",
+            padding: "7px 10px",
+            background: showReco ? "#e8f5e9" : "#f8f8f8",
+            border: showReco ? "1.5px solid #2a9d8f" : "1.5px solid #eee",
+            borderRadius: 10, cursor: "pointer",
+            fontSize: 12, fontWeight: 600,
+            color: showReco ? "#2a9d8f" : "#888",
+            textAlign: "left",
+          }}
+        >
+          🤝 Знакомства
+        </button>
+
+        {/* Список друзей */}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {loading && (
+            <div style={{ textAlign: "center", padding: 20, color: "#aaa", fontSize: 12 }}>
+              Загрузка...
+            </div>
+          )}
+          {!loading && chats.length === 0 && (
+            <div style={{ padding: "16px 10px", textAlign: "center", color: "#bbb", fontSize: 12 }}>
+              Нет друзей.<br />Нажми «Знакомства» ↑
+            </div>
+          )}
+          {chats.map(c => (
+            <FriendRow
+              key={c.pid}
+              chat={c}
+              active={selected === c.pid && !showReco}
+              onClick={() => { setSelected(c.pid); setShowReco(false); }}
+            />
+          ))}
         </div>
       </div>
 
-      {/* Список */}
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        {loading && (
-          <div style={{ textAlign: "center", padding: 32, color: "#aaa", fontSize: 14 }}>
-            Загрузка...
+      {/* ── Правая колонка: чат или знакомства ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {showReco && (
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <RecoPage
+              user={user}
+              onOpenDetail={onOpenDetail}
+              onChat={(pid) => { setSelected(pid); setShowReco(false); }}
+            />
           </div>
         )}
 
-        {!loading && chats.length === 0 && (
-          <div style={{ textAlign: "center", padding: "40px 24px", color: "#bbb" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>💬</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#888", marginBottom: 6 }}>
-              Нет контактов
+        {!showReco && selected && (
+          <>
+            {/* Мини-шапка с именем */}
+            <div style={{
+              padding: "8px 12px",
+              borderBottom: "1px solid #eee",
+              display: "flex", alignItems: "center", gap: 8,
+              background: "#fff", flexShrink: 0,
+            }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: "50%",
+                background: pidColor(selected), color: "#fff",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 13, fontWeight: 700, flexShrink: 0,
+              }}>
+                {(selectedChat?.first_name || "?")[0].toUpperCase()}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2 }}>
+                  {selectedChat?.first_name} {selectedChat?.last_name}
+                </div>
+                {selectedChat?.skills?.length > 0 && (
+                  <div style={{ fontSize: 10, color: "#aaa" }}>
+                    {selectedChat.skills.join(" · ")}
+                  </div>
+                )}
+              </div>
             </div>
-            <div style={{ fontSize: 13 }}>
-              Познакомься с участниками во вкладке «Знакомства»
-            </div>
-          </div>
+            <InlineChat pid={selected} myPid={user?.pid} />
+          </>
         )}
 
-        {chats.map(c => (
-          <ChatRow
-            key={c.pid}
-            chat={c}
-            onClick={() => setOpenPid(c.pid)}
-          />
-        ))}
+        {!showReco && !selected && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#ccc" }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>💬</div>
+            <div style={{ fontSize: 13 }}>Выберите собеседника</div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ChatRow({ chat, onClick }) {
+// ── Строка друга в левой колонке ──
+function FriendRow({ chat, active, onClick }) {
   const initial = (chat.first_name || "?")[0].toUpperCase();
   const hasUnread = chat.unread > 0;
 
@@ -98,73 +290,82 @@ function ChatRow({ chat, onClick }) {
     <div
       onClick={onClick}
       style={{
-        display: "flex", alignItems: "center", gap: 12,
-        padding: "10px 16px",
-        borderBottom: "1px solid #f7f7f7",
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "8px 8px",
         cursor: "pointer",
-        background: hasUnread ? "#f0fdf4" : "#fff",
+        background: active ? "#e8f5e9" : "transparent",
+        borderLeft: active ? "3px solid #2a9d8f" : "3px solid transparent",
         transition: "background .1s",
       }}
     >
       {/* Аватар */}
       <div style={{ position: "relative", flexShrink: 0 }}>
         <div style={{
-          width: 46, height: 46, borderRadius: "50%",
+          width: 38, height: 38, borderRadius: "50%",
           background: pidColor(chat.pid), color: "#fff",
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 18, fontWeight: 700,
+          fontSize: 15, fontWeight: 700,
         }}>
           {initial}
         </div>
         {chat.is_online && (
           <span style={{
-            position: "absolute", bottom: 1, right: 1,
-            width: 11, height: 11, borderRadius: "50%",
+            position: "absolute", bottom: 0, right: 0,
+            width: 10, height: 10, borderRadius: "50%",
             background: "#2a9d8f", border: "2px solid #fff",
           }} />
         )}
+        {hasUnread && (
+          <span style={{
+            position: "absolute", top: -2, right: -2,
+            background: "#e76f51", color: "#fff",
+            fontSize: 9, fontWeight: 700,
+            borderRadius: "50%", minWidth: 16, height: 16,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "0 3px",
+          }}>
+            {chat.unread > 9 ? "9+" : chat.unread}
+          </span>
+        )}
       </div>
 
-      {/* Контент */}
+      {/* Имя + навыки */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span style={{
-            fontSize: 14, fontWeight: hasUnread ? 700 : 600,
-            color: "#1a1a2e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            maxWidth: "65%",
-          }}>
-            {chat.first_name} {chat.last_name}
-          </span>
-          <span style={{ fontSize: 11, color: "#bbb", flexShrink: 0 }}>
-            {chat.last_time || ""}
-          </span>
+        <div style={{
+          fontSize: 12, fontWeight: hasUnread ? 700 : 600,
+          color: "#1a1a2e",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {chat.first_name}
         </div>
-
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
-          <span style={{
-            fontSize: 13, color: hasUnread ? "#555" : "#aaa",
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            maxWidth: "80%",
-            fontWeight: hasUnread ? 500 : 400,
-          }}>
+        {chat.skills?.length > 0 ? (
+          <div style={{ display: "flex", gap: 3, marginTop: 2, flexWrap: "wrap" }}>
+            {chat.skills.slice(0, 2).map(s => (
+              <span key={s} style={{
+                fontSize: 9, background: "#f0f0f0", color: "#666",
+                borderRadius: 4, padding: "1px 4px",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                maxWidth: 60,
+              }}>
+                {s}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 10, color: "#bbb", marginTop: 1 }}>
             {chat.last_message
-              ? (chat.last_message_mine ? "Вы: " : "") + chat.last_message.slice(0, 45) + (chat.last_message.length > 45 ? "…" : "")
-              : <span style={{ color: "#ccc", fontStyle: "italic" }}>Нет сообщений</span>
-            }
-          </span>
-          {hasUnread && (
-            <span style={{
-              background: "#2a9d8f", color: "#fff",
-              fontSize: 11, fontWeight: 700,
-              borderRadius: "50%", minWidth: 20, height: 20,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              padding: "0 4px", flexShrink: 0,
-            }}>
-              {chat.unread > 9 ? "9+" : chat.unread}
-            </span>
-          )}
-        </div>
+              ? chat.last_message.slice(0, 18) + (chat.last_message.length > 18 ? "…" : "")
+              : "нет сообщений"}
+          </div>
+        )}
       </div>
+
+      {/* Время */}
+      {chat.last_time && (
+        <div style={{ fontSize: 9, color: "#bbb", flexShrink: 0, alignSelf: "flex-start", marginTop: 2 }}>
+          {chat.last_time}
+        </div>
+      )}
     </div>
   );
 }

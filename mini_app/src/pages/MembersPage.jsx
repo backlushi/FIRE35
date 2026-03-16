@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import Fuse from "fuse.js";
 import api from "../api";
-import RecoPage from "./RecoPage";
 import ChatPage from "./ChatPage";
 import ChatsPage from "./ChatsPage";
 import AchievementsPage from "./AchievementsPage";
@@ -396,21 +395,12 @@ export default function MembersPage({ user, initialSubTab, onSubTabChange }) {
     );
   }
 
-  if (subTab === "reco") {
-    return (
-      <div className="page members-page">
-        <SubTabs active="reco" onChange={changeSubTab} />
-        <RecoPage user={user} onOpenDetail={openDetail} onChat={(pid) => setChatPid(pid)} />
-      </div>
-    );
-  }
-
   if (subTab === "chats") {
     return (
-      <div className="page members-page" style={{ padding: 0 }}>
+      <div className="page members-page" style={{ padding: 0, display: "flex", flexDirection: "column" }}>
         <SubTabs active="chats" onChange={changeSubTab} />
-        <div style={{ flex: 1, overflow: "hidden" }}>
-          <ChatsPage user={user} />
+        <div style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
+          <ChatsPage user={user} onOpenDetail={openDetail} />
         </div>
       </div>
     );
@@ -419,6 +409,7 @@ export default function MembersPage({ user, initialSubTab, onSubTabChange }) {
   return (
     <div className="page members-page">
       <SubTabs active="members" onChange={changeSubTab} />
+
 
       {/* Search + Filter button */}
       <div className="members-search-row">
@@ -551,7 +542,7 @@ export default function MembersPage({ user, initialSubTab, onSubTabChange }) {
   );
 }
 
-// ─── Подтабы Участники / Знакомства / Чаты ───────────────
+// ─── Подтабы Участники / Знакомства ──────────────────────
 function SubTabs({ active, onChange }) {
   return (
     <div className="connections-subtabs">
@@ -560,13 +551,9 @@ function SubTabs({ active, onChange }) {
         onClick={() => onChange("members")}
       >👥 Участники</button>
       <button
-        className={"conn-tab" + (active === "reco" ? " conn-tab-active" : "")}
-        onClick={() => onChange("reco")}
-      >🤝 Знакомства</button>
-      <button
         className={"conn-tab" + (active === "chats" ? " conn-tab-active" : "")}
         onClick={() => onChange("chats")}
-      >💬 Чаты</button>
+      >💬 Знакомства</button>
     </div>
   );
 }
