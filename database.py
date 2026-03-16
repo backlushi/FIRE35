@@ -290,12 +290,13 @@ class Achievement(Base):
 
 
 class AchievementLike(Base):
-    """Лайк участника на достижение."""
+    """Реакция участника на достижение (fire / idea)."""
     __tablename__ = "achievement_likes"
 
     id             = Column(Integer, primary_key=True, index=True)
     achievement_id = Column(Integer, ForeignKey("achievements.id"), nullable=False)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reaction       = Column(String, default="fire", nullable=False)  # "fire" | "idea"
     created_at     = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("achievement_id", "user_id", name="uq_ach_like"),)
@@ -437,6 +438,11 @@ def init_db():
         ach_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(achievements)"))]
         if "media_type" not in ach_cols:
             conn.execute(text("ALTER TABLE achievements ADD COLUMN media_type TEXT"))
+
+        # --- achievement_likes: reaction ---
+        like_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(achievement_likes)"))]
+        if "reaction" not in like_cols:
+            conn.execute(text("ALTER TABLE achievement_likes ADD COLUMN reaction TEXT DEFAULT 'fire'"))
 
         conn.commit()
 

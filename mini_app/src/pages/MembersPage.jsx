@@ -57,9 +57,21 @@ function DetailView({ pid, detail, loading, onBack, onContact, onChat }) {
           <div className="detail-hero">
             <Avatar pid={detail.pid} name={detail.first_name} size={56} online={detail.is_online} />
             <div className="detail-hero-info">
-              <div className="detail-hero-name">
-                {detail.first_name} {detail.last_name}
+              <div className="detail-hero-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span>{detail.first_name} {detail.last_name}</span>
                 {detail.is_me && <span className="badge-me">Вы</span>}
+                {!detail.is_me && detail.contact_status === "accepted" && (
+                  <button
+                    onClick={() => onChat(pid)}
+                    title="Написать сообщение"
+                    style={{
+                      background: "#2a9d8f", border: "none", color: "#fff",
+                      borderRadius: "50%", width: 28, height: 28,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 14, cursor: "pointer", flexShrink: 0,
+                    }}
+                  >💬</button>
+                )}
               </div>
               <div className="detail-hero-pid">{detail.pid}</div>
               {detail.profession && (

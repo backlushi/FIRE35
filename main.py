@@ -3272,14 +3272,23 @@ def get_achievements(
         .all()
     )
 
-    # Лайки текущего пользователя
-    my_likes = {
-        l.achievement_id
+    # Реакции текущего пользователя
+    my_reactions = {
+        l.achievement_id: l.reaction
         for l in db.query(AchievementLike).filter(AchievementLike.user_id == user.id).all()
     }
+    # Счётчики реакций по всем достижениям
+    all_likes = db.query(AchievementLike).filter(
+        AchievementLike.achievement_id.in_([ach.id for ach, _ in rows])
+    ).all()
+    reaction_counts = {}
+    for l in all_likes:
+        rc = reaction_counts.setdefault(l.achievement_id, {"fire": 0, "idea": 0})
+        rc[l.reaction or "fire"] = rc.get(l.reaction or "fire", 0) + 1
 
     result = []
     for ach, u in rows:
+        rc = reaction_counts.get(ach.id, {"fire": 0, "idea": 0})
         result.append({
             "id": ach.id,
             "content": ach.content,
@@ -3288,7 +3297,8 @@ def get_achievements(
             "media_url": ach.media_url,
             "media_type": ach.media_type,
             "likes": ach.likes,
-            "liked_by_me": ach.id in my_likes,
+            "liked_by_me": my_reactions.get(ach.id),
+            "reactions": rc,
             "is_me": u.id == user.id,
             "pid": u.pid,
             "first_name": u.first_name or u.pid,
@@ -3323,10 +3333,15 @@ def create_achievement(
 @app.post("/achievements/{ach_id}/like")
 def like_achievement(
     ach_id: int,
+    body: dict = {},
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Поставить/убрать лайк."""
+    """Поставить/сменить/убрать реакцию (fire | idea)."""
+    reaction = (body.get("reaction") or "fire") if body else "fire"
+    if reaction not in ("fire", "idea"):
+        reaction = "fire"
+
     ach = db.query(Achievement).filter(Achievement.id == ach_id).first()
     if not ach:
         raise HTTPException(404, "Не найдено")
@@ -3337,16 +3352,29 @@ def like_achievement(
     ).first()
 
     if existing:
-        db.delete(existing)
-        ach.likes = max(0, ach.likes - 1)
-        liked = False
+        if existing.reaction == reaction:
+            # Повторный тап — убираем реакцию
+            db.delete(existing)
+            ach.likes = max(0, ach.likes - 1)
+            liked = None
+        else:
+            # Меняем тип реакции
+            existing.reaction = reaction
+            liked = reaction
     else:
-        db.add(AchievementLike(achievement_id=ach_id, user_id=user.id))
+        db.add(AchievementLike(achievement_id=ach_id, user_id=user.id, reaction=reaction))
         ach.likes += 1
-        liked = True
+        liked = reaction
 
     db.commit()
-    return {"likes": ach.likes, "liked": liked}
+
+    # Пересчитываем реакции
+    all_likes = db.query(AchievementLike).filter(AchievementLike.achievement_id == ach_id).all()
+    rc = {"fire": 0, "idea": 0}
+    for l in all_likes:
+        rc[l.reaction or "fire"] = rc.get(l.reaction or "fire", 0) + 1
+
+    return {"likes": ach.likes, "liked": liked, "reactions": rc}
 
 
 @app.delete("/achievements/{ach_id}")
@@ -3476,6 +3504,7 @@ def chats_get(
                 "mine": m.sender_id == user.id,
                 "time": m.created_at.strftime("%H:%M"),
                 "date": m.created_at.strftime("%d.%m"),
+                "read": m.read_at is not None,
             }
             for m in msgs
         ],
@@ -3515,4 +3544,5 @@ def chats_send(
         "mine": True,
         "time": msg.created_at.strftime("%H:%M"),
         "date": msg.created_at.strftime("%d.%m"),
+        "read": False,
     }

@@ -11,7 +11,7 @@ import OnboardingScreen from "./pages/OnboardingScreen";
 const TABS = [
   { id: "profile",      label: "Профиль",     icon: "👤" },
   { id: "members",      label: "Связи",       icon: "👥" },
-  { id: "questions",    label: "Вопросы",     icon: "💬" },
+  { id: "questions",    label: "Вопросы",     icon: "🤔" },
   { id: "achievements", label: "Достижения",  icon: "🏆" },
   { id: "report",       label: "Отчёт",       icon: "📝" },
 ];

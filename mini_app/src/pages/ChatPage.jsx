@@ -133,8 +133,14 @@ export default function ChatPage({ pid, onBack }) {
                   <div style={{
                     fontSize: 10, marginTop: 2, textAlign: "right",
                     color: m.mine ? "rgba(255,255,255,0.7)" : "#bbb",
+                    display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2,
                   }}>
                     {m.time}
+                    {m.mine && (
+                      <span style={{ color: m.read ? "#a8e6cf" : "rgba(255,255,255,0.5)", fontSize: 10, letterSpacing: -1 }}>
+                        {m.read ? "✓✓" : "✓"}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

@@ -122,7 +122,7 @@ export default function QuestionsPage({ user }) {
           className={"q-filter-btn" + (!myTopics ? " active" : "")}
           onClick={() => { setMyTopics(false); }}
         >
-          💬 Все
+          🤔 Все
         </button>
         <button
           className={"q-filter-btn" + (myTopics ? " active" : "")}
