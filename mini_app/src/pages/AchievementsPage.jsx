@@ -4,7 +4,7 @@ import api from "../api";
 const AI_TOOLS = ["ChatGPT", "Claude", "Gemini", "Midjourney", "Grok", "Другое"];
 const BASE_URL = "https://fire35club.duckdns.org/fire35";
 
-export default function AchievementsPage({ user }) {
+export default function AchievementsPage({ user, filterPid }) {
   const [achievements, setAchievements] = useState([]);
   const [loading, setLoading]           = useState(true);
   const [posting, setPosting]           = useState(false);
@@ -13,14 +13,15 @@ export default function AchievementsPage({ user }) {
   const [mediaFile, setMediaFile]       = useState(null);
   const [uploading, setUploading]       = useState(false);
   const [error, setError]               = useState(null);
+  const [search, setSearch]             = useState("");
   const fileInputRef = useRef(null);
 
-  useEffect(() => { loadFeed(); }, []);
+  useEffect(() => { loadFeed(); }, [filterPid]);
 
   async function loadFeed() {
     setLoading(true);
     try {
-      const res = await api.get("/achievements");
+      const res = await api.get("/achievements", { params: filterPid ? { pid: filterPid } : {} });
       setAchievements(res.data);
     } catch { setAchievements([]); }
     setLoading(false);
@@ -92,16 +93,31 @@ export default function AchievementsPage({ user }) {
 
   return (
     <div className="page">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h1 className="page-title" style={{ margin: 0 }}>Достижения</h1>
-        <button
-          className="btn btn-primary"
-          style={{ fontSize: 13, padding: "6px 14px" }}
-          onClick={() => { setShowForm(f => !f); setError(null); }}
-        >
-          {showForm ? "✕ Отмена" : "+ Поделиться"}
-        </button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <h1 className="page-title" style={{ margin: 0 }}>
+          Достижения{filterPid ? ` · ${filterPid}` : ""}
+        </h1>
+        {!filterPid && (
+          <button
+            className="btn btn-primary"
+            style={{ fontSize: 13, padding: "6px 14px" }}
+            onClick={() => { setShowForm(f => !f); setError(null); }}
+          >
+            {showForm ? "✕ Отмена" : "+ Поделиться"}
+          </button>
+        )}
       </div>
+
+      {/* Поиск по имени */}
+      {!filterPid && (
+        <input
+          className="members-search-input"
+          style={{ marginBottom: 12 }}
+          placeholder="🔍 Поиск по имени..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      )}
 
       {/* ── Форма публикации ── */}
       {showForm && (
@@ -205,14 +221,17 @@ export default function AchievementsPage({ user }) {
         </div>
       )}
 
-      {achievements.map(a => (
-        <AchievementCard
-          key={a.id}
-          item={a}
-          onReact={(reaction) => handleReact(a.id, reaction)}
-          onDelete={a.is_me ? () => handleDelete(a.id) : null}
-        />
-      ))}
+      {achievements
+        .filter(a => !search.trim() || a.first_name.toLowerCase().includes(search.toLowerCase()))
+        .map(a => (
+          <AchievementCard
+            key={a.id}
+            item={a}
+            onReact={(reaction) => handleReact(a.id, reaction)}
+            onDelete={a.is_me ? () => handleDelete(a.id) : null}
+          />
+        ))
+      }
     </div>
   );
 }

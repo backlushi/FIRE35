@@ -6,6 +6,26 @@ const STATUS_FILTERS = [
   { id: "unsolved", label: "⏳ Открытые" },
 ];
 
+const AVATAR_COLORS = [
+  "#FF6B6B","#4ECDC4","#45B7D1","#FFA07A",
+  "#98D8C8","#7B68EE","#FFB347","#87CEEB",
+];
+function pidColor(pid) {
+  const n = parseInt((pid || "P-0").replace(/\D/g,""), 10) || 0;
+  return AVATAR_COLORS[n % AVATAR_COLORS.length];
+}
+function MiniAvatar({ pid, name }) {
+  const initial = (name || pid || "?")[0].toUpperCase();
+  return (
+    <div style={{
+      width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+      background: pidColor(pid), color: "#fff",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: 11, fontWeight: 700,
+    }}>{initial}</div>
+  );
+}
+
 export default function QuestionsPage({ user }) {
   const [questions, setQuestions]   = useState([]);
   const [loading, setLoading]       = useState(false);
@@ -14,6 +34,7 @@ export default function QuestionsPage({ user }) {
   const [expanded, setExpanded]     = useState(null);
   const [answerText, setAnswerText] = useState({});
   const [sending, setSending]       = useState({});
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   useEffect(() => { loadQuestions(); }, [filter, myTopics]);
 
@@ -102,13 +123,13 @@ export default function QuestionsPage({ user }) {
   }
 
   async function deleteQuestion(qid) {
-    if (!window.confirm("Удалить вопрос? Все ответы тоже удалятся.")) return;
     try {
       await api.delete(`/questions/${qid}`);
       setQuestions(qs => qs.filter(q => q.id !== qid));
       setExpanded(null);
+      setConfirmDeleteId(null);
     } catch (e) {
-      alert(e.response?.data?.detail || "Ошибка удаления");
+      setConfirmDeleteId(null);
     }
   }
 
@@ -164,18 +185,28 @@ export default function QuestionsPage({ user }) {
               {/* Заголовок */}
               <div className="q-card-header" onClick={() => toggleExpand(q.id)}>
                 <div className="q-card-top">
+                  <MiniAvatar pid={q.pid} name={q.first_name} />
                   <span className="q-author">{q.first_name}</span>
                   {q.answer_score > 0 && (
                     <span className="badge-score-sm">⭐{q.answer_score}</span>
                   )}
                   <span className="q-date">{q.created_at}</span>
                   {flagged && <span className="q-flag-badge" title="Отмечен участниками">⚠️</span>}
-                  {isAuthor && (
+                  {isAuthor && confirmDeleteId !== q.id && (
                     <button
                       className="btn-delete-q"
                       title="Удалить вопрос"
-                      onClick={e => { e.stopPropagation(); deleteQuestion(q.id); }}
+                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(q.id); }}
                     >🗑</button>
+                  )}
+                  {isAuthor && confirmDeleteId === q.id && (
+                    <span onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <span style={{ fontSize: 11, color: "#e76f51" }}>Удалить?</span>
+                      <button onClick={e => { e.stopPropagation(); deleteQuestion(q.id); }}
+                        style={{ background: "#e76f51", border: "none", color: "#fff", borderRadius: 5, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}>Да</button>
+                      <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                        style={{ background: "#eee", border: "none", color: "#555", borderRadius: 5, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}>Нет</button>
+                    </span>
                   )}
                 </div>
                 <div className="q-text">
@@ -200,6 +231,7 @@ export default function QuestionsPage({ user }) {
                   {q.answers.map(a => (
                     <div key={a.id} className={"q-answer" + (a.is_useful ? " q-answer-useful" : "")}>
                       <div className="q-answer-meta">
+                        <MiniAvatar pid={a.expert_pid} name={a.expert_name} />
                         <span className="q-answer-author">
                           {a.expert_name || "Анар"}
                           {a.expert_score > 0 && (

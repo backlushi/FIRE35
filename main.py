@@ -1498,14 +1498,15 @@ def get_questions(
             continue
         if tag and tag not in (q.tags or "").split(","):
             continue
-        # question_visibility: 'skills_only' — автоматически фильтруем по навыкам
-        # my_topics=True — явный запрос пользователя (всегда фильтруем)
-        if my_topics or (user.question_visibility or "skills_only") == "skills_only":
+        # my_topics=True — явный режим "по навыкам": свои не показываем,
+        # только чужие с тегами совпадающими с навыками
+        if my_topics:
+            if q.user_id == user.id:
+                continue  # свои вопросы не показываем
             my_skills = [s.skill_name for s in user.skills_list]
             q_tags = [t for t in (q.tags or "").split(",") if t]
-            # вопросы без тегов видны всем; вопросы с тегами — только если навык совпадает
-            if q_tags and not any(t in my_skills for t in q_tags):
-                continue
+            if not q_tags or not any(t in my_skills for t in q_tags):
+                continue  # без тегов или теги не совпадают — скрываем
 
         result.append({
             "id": q.id,
@@ -3259,18 +3260,17 @@ class AchievementIn(BaseModel):
 def get_achievements(
     offset: int = 0,
     limit: int = 20,
+    pid: Optional[str] = None,    # фильтр по участнику
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Лента достижений участников."""
-    rows = (
-        db.query(Achievement, User)
-        .join(User, Achievement.user_id == User.id)
-        .order_by(Achievement.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    """Лента достижений участников (опционально фильтр по pid)."""
+    q = db.query(Achievement, User).join(User, Achievement.user_id == User.id)
+    if pid:
+        target = db.query(User).filter(User.pid == pid.upper()).first()
+        if target:
+            q = q.filter(Achievement.user_id == target.id)
+    rows = q.order_by(Achievement.created_at.desc()).offset(offset).limit(limit).all()
 
     # Реакции текущего пользователя
     my_reactions = {

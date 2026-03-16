@@ -3,6 +3,7 @@ import Fuse from "fuse.js";
 import api from "../api";
 import RecoPage from "./RecoPage";
 import ChatPage from "./ChatPage";
+import AchievementsPage from "./AchievementsPage";
 
 // ─── Helpers ──────────────────────────────────────────────
 const AVATAR_COLORS = [
@@ -103,6 +104,14 @@ function DetailView({ pid, detail, loading, onBack, onContact, onChat }) {
                   <span key={s} className="skill-chip">{s}</span>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Достижения участника */}
+          {(detail.contact_status === "accepted" || detail.is_me) && (
+            <div className="detail-section">
+              <div className="detail-section-title">🏆 Достижения</div>
+              <AchievementsPage user={null} filterPid={detail.pid} />
             </div>
           )}
 

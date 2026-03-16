@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import api from "../api";
 import MonopolyGame from "./MonopolyGame";
 import AiBattlePage from "./AiBattlePage";
+import AchievementsPage from "./AchievementsPage";
 
 // ── helpers ─────────────────────────────────────────────────
 function getDisplayMonth() {
@@ -328,6 +329,9 @@ export default function ProfilePage({ user, setUser }) {
             <button className={"pf-tab-btn"+(activeTab==="progress"?" pf-tab-btn--active":"")} onClick={()=>openTab("progress")}>
               📚 Прогресс
             </button>
+            <button className={"pf-tab-btn"+(activeTab==="achievements"?" pf-tab-btn--active":"")} onClick={()=>openTab("achievements")}>
+              🏆 Достижения
+            </button>
             <button className={"pf-tab-btn"+(activeTab==="games"?" pf-tab-btn--active":"")} onClick={()=>openTab("games")}>
               🎲 Мои игры
             </button>
@@ -527,6 +531,13 @@ export default function ProfilePage({ user, setUser }) {
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* 🏆 Достижения */}
+      {!editing && activeTab === "achievements" && (
+        <div className="pf-tab-content">
+          <AchievementsPage user={user} filterPid={user.pid} />
         </div>
       )}
 
