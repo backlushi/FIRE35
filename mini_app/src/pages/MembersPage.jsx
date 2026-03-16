@@ -3,6 +3,7 @@ import Fuse from "fuse.js";
 import api from "../api";
 import RecoPage from "./RecoPage";
 import ChatPage from "./ChatPage";
+import ChatsPage from "./ChatsPage";
 import AchievementsPage from "./AchievementsPage";
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -274,8 +275,9 @@ function FilterPanel({ allProfessions, allSkills, filters, onChange, onClose }) 
 const EMPTY_FILTERS = { professions: [], skills: [], min_score: 0 };
 const PAGE_SIZE = 80; // items shown initially; +80 on "show more"
 
-export default function MembersPage({ user }) {
-  const [subTab, setSubTab]             = useState("members"); // 'members' | 'reco'
+export default function MembersPage({ user, initialSubTab, onSubTabChange }) {
+  const [subTab, setSubTab] = useState(initialSubTab || "members");
+  function changeSubTab(t) { setSubTab(t); onSubTabChange?.(); }
   const [members, setMembers]           = useState([]);
   const [loading, setLoading]           = useState(true);
   const [search, setSearch]             = useState("");
@@ -397,22 +399,26 @@ export default function MembersPage({ user }) {
   if (subTab === "reco") {
     return (
       <div className="page members-page">
-        <div className="connections-subtabs">
-          <button className="conn-tab" onClick={() => setSubTab("members")}>👥 Участники</button>
-          <button className="conn-tab conn-tab-active">🤝 Знакомства</button>
-        </div>
+        <SubTabs active="reco" onChange={changeSubTab} />
         <RecoPage user={user} onOpenDetail={openDetail} onChat={(pid) => setChatPid(pid)} />
+      </div>
+    );
+  }
+
+  if (subTab === "chats") {
+    return (
+      <div className="page members-page" style={{ padding: 0 }}>
+        <SubTabs active="chats" onChange={changeSubTab} />
+        <div style={{ flex: 1, overflow: "hidden" }}>
+          <ChatsPage user={user} />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="page members-page">
-      {/* Sub-tabs */}
-      <div className="connections-subtabs">
-        <button className="conn-tab conn-tab-active">👥 Участники</button>
-        <button className="conn-tab" onClick={() => setSubTab("reco")}>🤝 Знакомства</button>
-      </div>
+      <SubTabs active="members" onChange={changeSubTab} />
 
       {/* Search + Filter button */}
       <div className="members-search-row">
@@ -541,6 +547,26 @@ export default function MembersPage({ user }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Подтабы Участники / Знакомства / Чаты ───────────────
+function SubTabs({ active, onChange }) {
+  return (
+    <div className="connections-subtabs">
+      <button
+        className={"conn-tab" + (active === "members" ? " conn-tab-active" : "")}
+        onClick={() => onChange("members")}
+      >👥 Участники</button>
+      <button
+        className={"conn-tab" + (active === "reco" ? " conn-tab-active" : "")}
+        onClick={() => onChange("reco")}
+      >🤝 Знакомства</button>
+      <button
+        className={"conn-tab" + (active === "chats" ? " conn-tab-active" : "")}
+        onClick={() => onChange("chats")}
+      >💬 Чаты</button>
     </div>
   );
 }

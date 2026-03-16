@@ -26,6 +26,7 @@ export default function App() {
   const [needOnboarding, setNeedOnboarding] = useState(false);
   const [consentSaving, setConsentSaving]   = useState(false);
   const [unreadChats, setUnreadChats]       = useState(0);
+  const [membersSubTab, setMembersSubTab]   = useState(null);
   const pingRef = useRef(null);
   const unreadRef = useRef(null);
 
@@ -187,8 +188,8 @@ export default function App() {
   return (
     <div className="app">
       <div className="content">
-        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} onGoToChats={() => setTab("members")} />}
-        {tab === "members"      && <MembersPage user={user} />}
+        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} onGoToChats={() => { setMembersSubTab("chats"); setTab("members"); }} />}
+        {tab === "members"      && <MembersPage user={user} initialSubTab={membersSubTab} onSubTabChange={() => setMembersSubTab(null)} />}
         {tab === "questions"    && <QuestionsPage user={user} />}
         {tab === "achievements" && <AchievementsPage user={user} />}
         {tab === "report"       && <ReportPage user={user} />}

@@ -3431,38 +3431,56 @@ def chats_list(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Список диалогов: последнее сообщение + непрочитанные."""
-    msgs = db.query(Message).filter(
+    """Список всех друзей: последнее сообщение + непрочитанные."""
+    # Все принятые контакты
+    contacts = db.query(ContactRequest).filter(
+        ContactRequest.status == "accepted",
+        (ContactRequest.from_user_id == user.id) | (ContactRequest.to_user_id == user.id),
+    ).all()
+
+    friend_ids = []
+    for c in contacts:
+        fid = c.to_user_id if c.from_user_id == user.id else c.from_user_id
+        friend_ids.append(fid)
+
+    # Последнее сообщение с каждым другом
+    all_msgs = db.query(Message).filter(
         (Message.sender_id == user.id) | (Message.receiver_id == user.id)
     ).order_by(Message.created_at.desc()).all()
 
-    seen_partners = {}
-    for m in msgs:
-        partner_id = m.receiver_id if m.sender_id == user.id else m.sender_id
-        if partner_id not in seen_partners:
-            seen_partners[partner_id] = m
+    last_msgs = {}
+    for m in all_msgs:
+        pid = m.receiver_id if m.sender_id == user.id else m.sender_id
+        if pid not in last_msgs:
+            last_msgs[pid] = m
 
     result = []
-    for partner_id, last_msg in seen_partners.items():
-        partner = db.query(User).filter(User.id == partner_id).first()
+    for fid in friend_ids:
+        partner = db.query(User).filter(User.id == fid).first()
         if not partner:
             continue
         unread = db.query(Message).filter(
-            Message.sender_id == partner_id,
+            Message.sender_id == fid,
             Message.receiver_id == user.id,
             Message.read_at.is_(None),
         ).count()
+        last = last_msgs.get(fid)
         result.append({
             "pid": partner.pid,
             "first_name": partner.first_name or partner.pid,
             "last_name": partner.last_name or "",
-            "last_message": last_msg.content,
-            "last_message_mine": last_msg.sender_id == user.id,
-            "last_time": last_msg.created_at.strftime("%d.%m %H:%M"),
+            "telegram_username": partner.telegram_username or "",
+            "last_message": last.content if last else None,
+            "last_message_mine": (last.sender_id == user.id) if last else None,
+            "last_time": last.created_at.strftime("%H:%M") if last else None,
             "unread": unread,
+            "is_online": bool(partner.last_seen and
+                (datetime.utcnow() - partner.last_seen).total_seconds() < 180),
         })
 
-    result.sort(key=lambda x: x["last_time"], reverse=True)
+    # Сортируем: сначала с сообщениями (по времени), потом без
+    result.sort(key=lambda x: (x["last_time"] is None, x["last_time"] or ""), reverse=False)
+    result = sorted(result, key=lambda x: (x["last_time"] is None, x.get("last_time", "") or ""), reverse=True)
     return result
 
 
