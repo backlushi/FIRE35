@@ -36,6 +36,9 @@ from database import (User, UserSkill, Report, ContactRequest, FcmToken,
                       TrainerAttempt,
                       Achievement, AchievementLike,
                       Message,
+                      Season, Team, TeamMember,
+                      Challenge, ChallengeSubmission,
+                      UserTrust, ReportValidation, UserEmbedding,
                       get_db, init_db)
 
 # ─── config ───────────────────────────────────────────────
@@ -4044,3 +4047,492 @@ def chats_send(
         "date": msg.created_at.strftime("%d.%m"),
         "read": False,
     }
+
+
+
+# ══════════════════════════════════════════════════════════════
+#  СЕЗОНЫ / КОМАНДЫ / ВЫЗОВЫ
+# ══════════════════════════════════════════════════════════════
+
+import random
+import string
+
+def _make_invite_code(length=6) -> str:
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+def _get_or_create_trust(db: Session, user_id: int) -> UserTrust:
+    trust = db.query(UserTrust).filter(UserTrust.user_id == user_id).first()
+    if not trust:
+        trust = UserTrust(user_id=user_id, score=0.7)
+        db.add(trust)
+        db.commit()
+        db.refresh(trust)
+    return trust
+
+def _calc_contribution_score(user: User, db: Session) -> float:
+    answers = db.query(QuestionAnswer).filter(QuestionAnswer.expert_user_id == user.id).count()
+    validations = db.query(ReportValidation).filter(
+        ReportValidation.validator_id == user.id,
+        ReportValidation.decision.isnot(None)
+    ).count()
+    approved = db.query(ChallengeSubmission).filter(
+        ChallengeSubmission.user_id == user.id,
+        ChallengeSubmission.status == "approved"
+    ).count()
+    raw = answers * 2 + validations * 1 + approved * 5
+    return min(raw / 50.0, 1.0)
+
+def _calc_team_scores(team: Team, db: Session) -> dict:
+    members = db.query(TeamMember).filter(TeamMember.team_id == team.id).all()
+    capital = 0.0
+    for m in members:
+        u = db.query(User).filter(User.id == m.user_id).first()
+        if not u:
+            continue
+        fire = calc_fire_score(u, db)["total"] if u else 0
+        trust = _get_or_create_trust(db, u.id).score
+        contrib = _calc_contribution_score(u, db)
+        capital += fire * trust * contrib
+    n = len(members) or 1
+    efficiency = capital / n
+    rating = 0.7 * capital + 0.3 * efficiency
+    return {"capital": round(capital, 2), "efficiency": round(efficiency, 2),
+            "rating": round(rating, 2), "members_count": n}
+
+
+# ── Схемы ─────────────────────────────────────────────────────
+
+class SeasonCreate(BaseModel):
+    name: str
+    start_date: datetime
+    end_date: datetime
+
+class TeamCreate(BaseModel):
+    name: str
+
+class TeamJoin(BaseModel):
+    invite_code: str
+
+class ChallengeCreate(BaseModel):
+    title: str
+    description: str
+    category: str
+    difficulty: str = "bronze"
+    jury_name: Optional[str] = None
+    jury_telegram_id: Optional[str] = None
+    requirements: Optional[str] = None
+    reward_fire_score: int = 10
+    reward_trust_bonus: float = 0.05
+    reward_achievement_title: Optional[str] = None
+    season_id: Optional[int] = None
+    is_team_challenge: bool = False
+
+class SubmitChallenge(BaseModel):
+    evidence_url: Optional[str] = None
+    evidence_text: Optional[str] = None
+
+class JuryReview(BaseModel):
+    decision: str
+    comment: Optional[str] = None
+
+class ValidateReport(BaseModel):
+    decision: str
+
+
+# ── Сезоны ────────────────────────────────────────────────────
+
+@app.get("/seasons/current")
+def current_season(db: Session = Depends(get_db)):
+    season = db.query(Season).filter(Season.status == "active").order_by(Season.start_date.desc()).first()
+    if not season:
+        raise HTTPException(404, "Активный сезон не найден")
+    return {
+        "id": season.id, "name": season.name,
+        "start_date": season.start_date.isoformat(),
+        "end_date": season.end_date.isoformat(),
+        "days_left": max(0, (season.end_date - datetime.utcnow()).days),
+    }
+
+@app.get("/seasons")
+def list_seasons(db: Session = Depends(get_db)):
+    seasons = db.query(Season).order_by(Season.start_date.desc()).all()
+    return [{"id": s.id, "name": s.name, "status": s.status,
+             "start_date": s.start_date.isoformat(), "end_date": s.end_date.isoformat()}
+            for s in seasons]
+
+@app.post("/seasons")
+def create_season(body: SeasonCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.pid != "P-001":
+        raise HTTPException(403, "Только для администратора")
+    season = Season(name=body.name, start_date=body.start_date, end_date=body.end_date)
+    db.add(season)
+    db.commit()
+    db.refresh(season)
+    return {"id": season.id, "name": season.name}
+
+
+# ── Команды ───────────────────────────────────────────────────
+
+@app.get("/teams")
+def list_teams(db: Session = Depends(get_db)):
+    season = db.query(Season).filter(Season.status == "active").first()
+    if not season:
+        return []
+    teams = db.query(Team).filter(Team.season_id == season.id).all()
+    result = []
+    for t in teams:
+        scores = _calc_team_scores(t, db)
+        result.append({
+            "id": t.id, "name": t.name,
+            "captain_id": t.captain_id,
+            "members_count": scores["members_count"],
+            "team_capital": scores["capital"],
+            "team_rating": scores["rating"],
+        })
+    result.sort(key=lambda x: -x["team_rating"])
+    for i, r in enumerate(result):
+        r["rank"] = i + 1
+    return result
+
+@app.post("/teams")
+def create_team(body: TeamCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    season = db.query(Season).filter(Season.status == "active").first()
+    if not season:
+        raise HTTPException(400, "Нет активного сезона")
+    existing = db.query(TeamMember).join(Team).filter(
+        Team.season_id == season.id, TeamMember.user_id == user.id
+    ).first()
+    if existing:
+        raise HTTPException(400, "Вы уже состоите в команде этого сезона")
+    invite = _make_invite_code()
+    team = Team(season_id=season.id, name=body.name.strip(),
+                captain_id=user.id, invite_code=invite)
+    db.add(team)
+    db.flush()
+    db.add(TeamMember(team_id=team.id, user_id=user.id, role="captain"))
+    db.commit()
+    db.refresh(team)
+    return {"id": team.id, "name": team.name, "invite_code": team.invite_code}
+
+@app.post("/teams/join")
+def join_team(body: TeamJoin, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    season = db.query(Season).filter(Season.status == "active").first()
+    if not season:
+        raise HTTPException(400, "Нет активного сезона")
+    existing = db.query(TeamMember).join(Team).filter(
+        Team.season_id == season.id, TeamMember.user_id == user.id
+    ).first()
+    if existing:
+        raise HTTPException(400, "Вы уже в команде")
+    team = db.query(Team).filter(
+        Team.season_id == season.id,
+        Team.invite_code == body.invite_code.upper()
+    ).first()
+    if not team:
+        raise HTTPException(404, "Команда не найдена — проверьте код")
+    count = db.query(TeamMember).filter(TeamMember.team_id == team.id).count()
+    if count >= 7:
+        raise HTTPException(400, "Команда заполнена (максимум 7 участников)")
+    db.add(TeamMember(team_id=team.id, user_id=user.id, role="member"))
+    db.commit()
+    return {"ok": True, "team_name": team.name}
+
+@app.get("/teams/my")
+def my_team(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    season = db.query(Season).filter(Season.status == "active").first()
+    if not season:
+        return {"team": None}
+    membership = db.query(TeamMember).join(Team).filter(
+        Team.season_id == season.id, TeamMember.user_id == user.id
+    ).first()
+    if not membership:
+        return {"team": None}
+    team = db.query(Team).filter(Team.id == membership.team_id).first()
+    members_raw = db.query(TeamMember).filter(TeamMember.team_id == team.id).all()
+    members = []
+    for m in members_raw:
+        u = db.query(User).filter(User.id == m.user_id).first()
+        if not u:
+            continue
+        fire = calc_fire_score(u, db)["total"]
+        trust = _get_or_create_trust(db, u.id).score
+        contrib = _calc_contribution_score(u, db)
+        members.append({
+            "pid": u.pid,
+            "name": u.first_name or u.telegram_username or u.pid,
+            "role": m.role,
+            "fire_score": round(fire),
+            "trust_score": round(trust, 2),
+            "effective_score": round(fire * trust, 1),
+            "contribution": round(contrib, 2),
+        })
+    scores = _calc_team_scores(team, db)
+    return {
+        "team": {
+            "id": team.id, "name": team.name,
+            "invite_code": team.invite_code if membership.role == "captain" else None,
+            "my_role": membership.role,
+        },
+        "members": members,
+        "scores": scores,
+    }
+
+
+# ── Вызовы (Challenges) ────────────────────────────────────────
+
+DIFFICULTY_COLORS = {
+    "bronze": "#CD7F32", "silver": "#C0C0C0",
+    "gold": "#FFD700",   "legendary": "#9B59B6",
+}
+
+@app.get("/challenges")
+def list_challenges(
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    season = db.query(Season).filter(Season.status == "active").first()
+    q = db.query(Challenge).filter(Challenge.is_active == True)
+    if season:
+        q = q.filter((Challenge.season_id == season.id) | (Challenge.season_id == None))
+    if category:
+        q = q.filter(Challenge.category == category)
+    challenges = q.all()
+    my_subs = {
+        s.challenge_id: s for s in
+        db.query(ChallengeSubmission).filter(ChallengeSubmission.user_id == user.id).all()
+    }
+    return [
+        {
+            "id": c.id, "title": c.title, "description": c.description,
+            "category": c.category, "difficulty": c.difficulty,
+            "difficulty_color": DIFFICULTY_COLORS.get(c.difficulty, "#888"),
+            "jury_name": c.jury_name, "requirements": c.requirements,
+            "reward_fire_score": c.reward_fire_score,
+            "reward_achievement": c.reward_achievement_title,
+            "is_team": c.is_team_challenge,
+            "my_status": my_subs[c.id].status if c.id in my_subs else None,
+        }
+        for c in challenges
+    ]
+
+@app.post("/challenges")
+def create_challenge(body: ChallengeCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.pid != "P-001":
+        raise HTTPException(403, "Только для администратора")
+    ch = Challenge(**body.model_dump())
+    db.add(ch)
+    db.commit()
+    db.refresh(ch)
+    return {"id": ch.id, "title": ch.title}
+
+@app.post("/challenges/{challenge_id}/submit")
+async def submit_challenge(
+    challenge_id: int,
+    body: SubmitChallenge,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    ch = db.query(Challenge).filter(Challenge.id == challenge_id, Challenge.is_active == True).first()
+    if not ch:
+        raise HTTPException(404, "Вызов не найден")
+    existing = db.query(ChallengeSubmission).filter(
+        ChallengeSubmission.challenge_id == challenge_id,
+        ChallengeSubmission.user_id == user.id,
+        ChallengeSubmission.status.in_(["pending", "approved"]),
+    ).first()
+    if existing:
+        raise HTTPException(400, "Заявка уже подана")
+    season = db.query(Season).filter(Season.status == "active").first()
+    team_id = None
+    if season:
+        mem = db.query(TeamMember).join(Team).filter(
+            Team.season_id == season.id, TeamMember.user_id == user.id
+        ).first()
+        if mem:
+            team_id = mem.team_id
+    sub = ChallengeSubmission(
+        challenge_id=challenge_id, user_id=user.id, team_id=team_id,
+        evidence_url=body.evidence_url, evidence_text=body.evidence_text, status="pending",
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    # Уведомляем жюри
+    if ch.jury_telegram_id:
+        name = user.first_name or user.telegram_username or user.pid
+        txt = (f"📋 <b>Заявка на вызов</b>\n<b>{name}</b> ({user.pid})\n"
+               f"<b>Вызов:</b> {ch.title}\n")
+        if body.evidence_url:
+            txt += f"🔗 {body.evidence_url}\n"
+        if body.evidence_text:
+            txt += f"📝 {body.evidence_text}\n"
+        txt += f"\n/review_{sub.id}_approved — ✅\n/review_{sub.id}_rejected — ❌"
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": ch.jury_telegram_id, "text": txt, "parse_mode": "HTML"},
+                )
+        except Exception as e:
+            print(f"[CHALLENGE] jury notify: {e}", flush=True)
+    return {"submission_id": sub.id, "status": "pending"}
+
+@app.patch("/submissions/{sub_id}/review")
+async def review_submission(
+    sub_id: int,
+    body: JuryReview,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    sub = db.query(ChallengeSubmission).filter(ChallengeSubmission.id == sub_id).first()
+    if not sub:
+        raise HTTPException(404, "Заявка не найдена")
+    ch = db.query(Challenge).filter(Challenge.id == sub.challenge_id).first()
+    is_admin = user.pid == "P-001"
+    is_jury = ch and ch.jury_telegram_id and ch.jury_telegram_id == user.telegram_id
+    if not (is_admin or is_jury):
+        raise HTTPException(403, "Нет доступа")
+    if body.decision not in ("approved", "rejected", "revision"):
+        raise HTTPException(400, "decision: approved / rejected / revision")
+    sub.status = body.decision
+    sub.jury_comment = body.comment
+    sub.reviewed_at = datetime.utcnow()
+    if body.decision == "approved" and ch:
+        if ch.reward_achievement_title:
+            db.add(Achievement(
+                user_id=sub.user_id,
+                content=f"🏆 {ch.reward_achievement_title} — {ch.title}",
+                ai_tool="challenge",
+            ))
+        if ch.reward_trust_bonus > 0:
+            trust = _get_or_create_trust(db, sub.user_id)
+            trust.score = min(1.0, trust.score + ch.reward_trust_bonus)
+            trust.updated_at = datetime.utcnow()
+    db.commit()
+    # Уведомляем участника
+    applicant = db.query(User).filter(User.id == sub.user_id).first()
+    if applicant and applicant.telegram_id:
+        msgs = {
+            "approved": f"✅ Вызов <b>{ch.title}</b> одобрен! +{ch.reward_fire_score} к FIRE Score" +
+                        (f"\n🏆 {ch.reward_achievement_title}" if ch and ch.reward_achievement_title else ""),
+            "rejected": f"❌ Вызов <b>{ch.title}</b> отклонён.\nКомментарий: {body.comment or '—'}",
+            "revision": f"🔄 Нужны доработки по <b>{ch.title}</b>.\n{body.comment or ''}",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": applicant.telegram_id,
+                          "text": msgs.get(body.decision, ""), "parse_mode": "HTML"},
+                )
+        except Exception:
+            pass
+    return {"ok": True, "status": sub.status}
+
+@app.get("/submissions/my")
+def my_submissions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    subs = db.query(ChallengeSubmission).filter(
+        ChallengeSubmission.user_id == user.id
+    ).order_by(ChallengeSubmission.submitted_at.desc()).all()
+    result = []
+    for s in subs:
+        ch = db.query(Challenge).filter(Challenge.id == s.challenge_id).first()
+        result.append({
+            "id": s.id,
+            "challenge_title": ch.title if ch else "?",
+            "category": ch.category if ch else "?",
+            "difficulty": ch.difficulty if ch else "?",
+            "status": s.status,
+            "jury_comment": s.jury_comment,
+            "submitted_at": s.submitted_at.isoformat(),
+        })
+    return result
+
+
+# ── Trust Score ────────────────────────────────────────────────
+
+@app.get("/me/trust")
+def my_trust(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    trust = _get_or_create_trust(db, user.id)
+    fire = calc_fire_score(user, db)["total"]
+    return {
+        "score": round(trust.score, 2),
+        "validated_reports": trust.validated_reports,
+        "rejected_reports": trust.rejected_reports,
+        "validations_done": trust.validations_done,
+        "fire_score": round(fire),
+        "effective_score": round(fire * trust.score, 1),
+    }
+
+
+# ── Peer Validation отчётов ────────────────────────────────────
+
+@app.get("/reports/pending-validation")
+def pending_validations(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    already = db.query(ReportValidation.report_id).filter(
+        ReportValidation.validator_id == user.id
+    ).subquery()
+    reports = db.query(Report).filter(
+        Report.user_id != user.id,
+        ~Report.id.in_(already),
+    ).order_by(Report.created_at.desc()).limit(5).all()
+    result = []
+    for r in reports:
+        author = db.query(User).filter(User.id == r.user_id).first()
+        result.append({
+            "report_id": r.id, "month": r.month,
+            "author_pid": author.pid if author else "?",
+            "savings_pct": r.savings_pct, "invest_pct": r.invest_pct,
+            "budget_yes": r.budget_yes, "income_gt_expense": r.income_gt_expense,
+        })
+    return result
+
+@app.post("/reports/{report_id}/validate")
+def validate_report_peer(
+    report_id: int,
+    body: ValidateReport,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(400, "decision: approve / reject")
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Отчёт не найден")
+    if report.user_id == user.id:
+        raise HTTPException(400, "Нельзя валидировать свой отчёт")
+    existing = db.query(ReportValidation).filter(
+        ReportValidation.report_id == report_id,
+        ReportValidation.validator_id == user.id,
+    ).first()
+    if existing:
+        raise HTTPException(400, "Вы уже проголосовали")
+    rv = ReportValidation(
+        report_id=report_id, validator_id=user.id,
+        decision=body.decision, decided_at=datetime.utcnow(),
+    )
+    db.add(rv)
+    # +0.01 trust валидатору за участие
+    v_trust = _get_or_create_trust(db, user.id)
+    v_trust.validations_done += 1
+    v_trust.score = min(1.0, v_trust.score + 0.01)
+    v_trust.updated_at = datetime.utcnow()
+    # Пересчёт trust автора при 2+ голосах
+    all_votes = db.query(ReportValidation).filter(
+        ReportValidation.report_id == report_id,
+        ReportValidation.decision.isnot(None),
+    ).all()
+    votes_after = len(all_votes) + 1
+    rejects = sum(1 for v in all_votes if v.decision == "reject") + (1 if body.decision == "reject" else 0)
+    if votes_after >= 2:
+        a_trust = _get_or_create_trust(db, report.user_id)
+        if rejects / votes_after > 0.4:
+            a_trust.rejected_reports += 1
+            a_trust.score = max(0.1, a_trust.score - 0.1)
+        else:
+            a_trust.validated_reports += 1
+            a_trust.score = min(1.0, a_trust.score + 0.05)
+        a_trust.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "your_decision": body.decision, "total_votes": votes_after}

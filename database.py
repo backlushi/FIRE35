@@ -368,6 +368,145 @@ class Message(Base):
     receiver = relationship("User", foreign_keys=[receiver_id])
 
 
+# ══════════════════════════════════════════════════════════════
+#  СЕЗОНЫ / КОМАНДЫ / ВЫЗОВЫ
+# ══════════════════════════════════════════════════════════════
+
+class Season(Base):
+    """Сезон клуба — 1 месяц."""
+    __tablename__ = "seasons"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    name       = Column(String, nullable=False)          # "Сезон 1 — Апрель 2026"
+    start_date = Column(DateTime, nullable=False)
+    end_date   = Column(DateTime, nullable=False)
+    status     = Column(String, default="active")        # active / finished
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    teams      = relationship("Team", back_populates="season")
+    challenges = relationship("Challenge", back_populates="season")
+
+
+class Team(Base):
+    """Команда участников внутри сезона."""
+    __tablename__ = "teams"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    season_id  = Column(Integer, ForeignKey("seasons.id"), nullable=False)
+    name       = Column(String, nullable=False)
+    captain_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    invite_code = Column(String, unique=True, nullable=True)   # короткий код для вступления
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    season  = relationship("Season", back_populates="teams")
+    captain = relationship("User", foreign_keys=[captain_id])
+    members = relationship("TeamMember", back_populates="team",
+                           cascade="all, delete-orphan")
+
+
+class TeamMember(Base):
+    """Участник команды с ролью."""
+    __tablename__ = "team_members"
+
+    id        = Column(Integer, primary_key=True, index=True)
+    team_id   = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    user_id   = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role      = Column(String, nullable=True)    # captain / analyst / practitioner / mentor
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_member"),)
+
+    team = relationship("Team", back_populates="members")
+    user = relationship("User")
+
+
+class Challenge(Base):
+    """Вызов — реальная задача с жюри и наградой."""
+    __tablename__ = "challenges"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    title                   = Column(String, nullable=False)
+    description             = Column(String, nullable=False)
+    category                = Column(String, nullable=False)  # business/brand/investment/team/finance
+    difficulty              = Column(String, default="bronze")# bronze/silver/gold/legendary
+    jury_name               = Column(String, nullable=True)   # "Михаил Гребенюк"
+    jury_telegram_id        = Column(String, nullable=True)   # telegram_id жюри для уведомлений
+    requirements            = Column(String, nullable=True)   # что нужно предоставить (текст)
+    reward_fire_score       = Column(Integer, default=10)
+    reward_trust_bonus      = Column(Float, default=0.05)
+    reward_achievement_title = Column(String, nullable=True)  # название ачивки
+    season_id               = Column(Integer, ForeignKey("seasons.id"), nullable=True)  # null = постоянный
+    is_team_challenge       = Column(Boolean, default=False)
+    is_active               = Column(Boolean, default=True)
+    created_at              = Column(DateTime, default=datetime.utcnow)
+
+    season      = relationship("Season", back_populates="challenges")
+    submissions = relationship("ChallengeSubmission", back_populates="challenge")
+
+
+class ChallengeSubmission(Base):
+    """Заявка участника на выполнение вызова."""
+    __tablename__ = "challenge_submissions"
+
+    id                 = Column(Integer, primary_key=True, index=True)
+    challenge_id       = Column(Integer, ForeignKey("challenges.id"), nullable=False)
+    user_id            = Column(Integer, ForeignKey("users.id"), nullable=False)
+    team_id            = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    evidence_url       = Column(String, nullable=True)   # ссылка на результат
+    evidence_text      = Column(String, nullable=True)   # описание что сделал
+    screenshot_file_id = Column(String, nullable=True)   # telegram file_id скриншота
+    status             = Column(String, default="pending")  # pending/approved/rejected/revision
+    jury_comment       = Column(String, nullable=True)
+    submitted_at       = Column(DateTime, default=datetime.utcnow)
+    reviewed_at        = Column(DateTime, nullable=True)
+
+    challenge = relationship("Challenge", back_populates="submissions")
+    user      = relationship("User")
+    team      = relationship("Team")
+
+
+class UserTrust(Base):
+    """Trust Score участника — достоверность его данных."""
+    __tablename__ = "user_trust"
+
+    user_id           = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    score             = Column(Float, default=0.7)   # 0.0–1.0, старт 0.7
+    validated_reports = Column(Integer, default=0)   # отчётов одобрено валидаторами
+    rejected_reports  = Column(Integer, default=0)   # отчётов отклонено
+    validations_done  = Column(Integer, default=0)   # сколько чужих отчётов проверил
+    updated_at        = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
+class ReportValidation(Base):
+    """Peer validation отчёта — 2-3 случайных участника голосуют."""
+    __tablename__ = "report_validations"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    report_id    = Column(Integer, ForeignKey("reports.id"), nullable=False)
+    validator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    decision     = Column(String, nullable=True)    # approve / reject / null (не ответил)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    decided_at   = Column(DateTime, nullable=True)
+
+    __table_args__ = (UniqueConstraint("report_id", "validator_id", name="uq_report_validator"),)
+
+    report    = relationship("Report")
+    validator = relationship("User")
+
+
+class UserEmbedding(Base):
+    """Embedding профиля пользователя — для формирования команд."""
+    __tablename__ = "user_embeddings"
+
+    user_id    = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    embedding  = Column(LargeBinary, nullable=False)   # numpy float32 bytes
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -443,6 +582,24 @@ def init_db():
         like_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(achievement_likes)"))]
         if "reaction" not in like_cols:
             conn.execute(text("ALTER TABLE achievement_likes ADD COLUMN reaction TEXT DEFAULT 'fire'"))
+
+        # --- teams ---
+        team_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(teams)"))]
+        if "invite_code" not in team_cols:
+            conn.execute(text("ALTER TABLE teams ADD COLUMN invite_code TEXT"))
+
+        # --- challenges ---
+        ch_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(challenges)"))]
+        for col, definition in [
+            ("requirements",             "TEXT"),
+            ("reward_trust_bonus",       "REAL DEFAULT 0.05"),
+            ("reward_achievement_title", "TEXT"),
+            ("is_team_challenge",        "INTEGER DEFAULT 0"),
+            ("is_active",                "INTEGER DEFAULT 1"),
+            ("jury_telegram_id",         "TEXT"),
+        ]:
+            if col not in ch_cols:
+                conn.execute(text(f"ALTER TABLE challenges ADD COLUMN {col} {definition}"))
 
         conn.commit()
 
