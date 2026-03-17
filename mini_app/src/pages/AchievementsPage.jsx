@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import api from "../api";
+import SmartAvatar from "../components/SmartAvatar";
 
 const AI_TOOLS = ["ChatGPT", "Claude", "Gemini", "Midjourney", "Grok", "Другое"];
 const BASE_URL = "https://fire35club.duckdns.org/fire35";
@@ -286,14 +287,7 @@ function AchievementCard({ item, onReact, onDelete }) {
       {/* ── Шапка ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: "50%",
-            background: "#2a9d8f", color: "#fff",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 14, fontWeight: 700, flexShrink: 0,
-          }}>
-            {item.first_name[0]?.toUpperCase() || "?"}
-          </div>
+          <SmartAvatar pid={item.pid} name={item.first_name} size={32} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 600 }}>
               {item.first_name}

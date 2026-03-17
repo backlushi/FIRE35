@@ -3874,3 +3874,5 @@ body {
 }
 .mmodal-icon { font-size: 40px; }
 .mmodal-text { font-size: 14px; font-weight: 600; color: #333; line-height: 1.4; }
+
+@keyframes slideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

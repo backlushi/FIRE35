@@ -217,10 +217,28 @@ function TrainerView() {
   const [aiResponse, setAiResponse] = useState(null);
   const [loadingResponse, setLoadingResponse] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [personalScenario, setPersonalScenario] = useState(null); // null = дефолтный
+  const [personalTopicId, setPersonalTopicId] = useState(null);
+  const [loadingPersonal, setLoadingPersonal] = useState(false);
 
   useEffect(() => {
     api.get("/ai-battle/trainer/history").then(r => setHistory(r.data)).catch(() => {});
   }, []);
+
+  async function loadPersonalScenario() {
+    setLoadingPersonal(true);
+    try {
+      const res = await api.post("/ai-battle/trainer/generate-scenario", {
+        topic_id: selectedTopic?.id || undefined,
+      });
+      setPersonalScenario(res.data.scenario);
+      setPersonalTopicId(res.data.topic_id || null);
+    } catch {
+      setPersonalScenario(null);
+      setPersonalTopicId(null);
+    }
+    setLoadingPersonal(false);
+  }
 
   async function handleEvaluate() {
     if (promptText.trim().length < 10) { setError("Промпт слишком короткий"); return; }
@@ -229,9 +247,9 @@ function TrainerView() {
       const res = await api.post("/ai-battle/trainer", {
         topic_id: selectedTopic.id,
         prompt_text: promptText,
+        custom_scenario: personalScenario || undefined,
       });
       setResult(res.data);
-      // обновляем историю
       api.get("/ai-battle/trainer/history").then(r => setHistory(r.data)).catch(() => {});
     } catch (e) {
       setError(e.response?.data?.detail || "Ошибка оценки. Попробуй ещё раз.");
@@ -270,7 +288,7 @@ function TrainerView() {
   function reset() {
     setSelectedTopic(null); setPromptText(""); setResult(null);
     setError(null); setIdealPrompt(null); setShowIdeal(false);
-    setAiResponse(null); setShowHistory(false);
+    setAiResponse(null); setShowHistory(false); setPersonalScenario(null); setPersonalTopicId(null);
   }
 
   const topicHistory = selectedTopic ? (history[selectedTopic.id] || []) : [];
@@ -279,12 +297,69 @@ function TrainerView() {
   if (!selectedTopic) {
     return (
       <>
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>🤖 AI-Тренажёр</div>
-          <div style={{ fontSize: 13, color: "#555", lineHeight: 1.7 }}>
-            Выбери тему → напиши промпт → получи разбор: что хорошо, что не так и как улучшить. Можно посмотреть реальный ответ AI и эталонный промпт для сравнения.
+        {/* ── Персональное задание — вверху ── */}
+        <div style={{
+          background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
+          borderRadius: 14, padding: "16px", marginBottom: 14,
+          boxShadow: "0 4px 16px rgba(42,157,143,0.2)",
+        }}>
+          <div style={{ color: "#fff", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+            ✨ Персональное задание
           </div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, lineHeight: 1.5, marginBottom: 12 }}>
+            AI анализирует твой профиль, навыки и финансовые отчёты — чем точнее заполнен профиль и отчёты, тем персональнее задание.
+          </div>
+          {personalScenario ? (
+            <>
+              <div style={{
+                background: "rgba(255,255,255,0.1)", borderRadius: 10,
+                padding: "10px 12px", marginBottom: 10,
+                fontSize: 13, color: "#e8f5e9", lineHeight: 1.6,
+              }}>
+                {personalScenario}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => {
+                    const t = (personalTopicId && TRAINER_TOPICS.find(t => t.id === personalTopicId))
+                      || TRAINER_TOPICS[0];
+                    setSelectedTopic(t);
+                  }}
+                  style={{
+                    flex: 1, background: "#2a9d8f", border: "none", color: "#fff",
+                    borderRadius: 10, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+                  }}
+                >
+                  🚀 Начать это задание
+                </button>
+                <button
+                  onClick={loadPersonalScenario}
+                  disabled={loadingPersonal}
+                  style={{
+                    background: "rgba(255,255,255,0.15)", border: "none", color: "#fff",
+                    borderRadius: 10, padding: "10px 14px", fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  {loadingPersonal ? "⏳" : "🔄"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              onClick={loadPersonalScenario}
+              disabled={loadingPersonal}
+              style={{
+                width: "100%", background: "#2a9d8f", border: "none", color: "#fff",
+                borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer",
+              }}
+            >
+              {loadingPersonal ? "⏳ Анализирую профиль..." : "🎯 Получить моё задание"}
+            </button>
+          )}
         </div>
+
+        <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8, paddingLeft: 4 }}>Или выбери тему сам:</div>
+
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {TRAINER_TOPICS.map(t => {
             const th = history[t.id] || [];
@@ -324,8 +399,37 @@ function TrainerView() {
       </button>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 20, marginBottom: 6 }}>{selectedTopic.emoji} {selectedTopic.title}</div>
-        <div style={{ fontSize: 14, lineHeight: 1.6, color: "#444" }}>{selectedTopic.scenario}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ fontSize: 18 }}>{selectedTopic.emoji} {selectedTopic.title}</div>
+          {!result && (
+            <button
+              onClick={loadPersonalScenario}
+              disabled={loadingPersonal}
+              style={{
+                background: personalScenario ? "#e8f5e9" : "#f5f3ff",
+                border: personalScenario ? "1px solid #2a9d8f" : "1px solid #c4b5fd",
+                borderRadius: 8, padding: "4px 10px",
+                fontSize: 11, fontWeight: 600, cursor: "pointer",
+                color: personalScenario ? "#2a9d8f" : "#7c3aed",
+              }}
+            >
+              {loadingPersonal ? "⏳ Генерирую..." : personalScenario ? "🔄 Другое задание" : "🎯 Моё задание"}
+            </button>
+          )}
+        </div>
+        {personalScenario ? (
+          <>
+            <div style={{
+              fontSize: 11, color: "#2a9d8f", fontWeight: 600, marginBottom: 4,
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              ✨ Персонализировано под тебя
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.6, color: "#222" }}>{personalScenario}</div>
+          </>
+        ) : (
+          <div style={{ fontSize: 14, lineHeight: 1.6, color: "#444" }}>{selectedTopic.scenario}</div>
+        )}
       </div>
 
       {/* История попыток */}

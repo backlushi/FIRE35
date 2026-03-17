@@ -45,7 +45,7 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "fire35_admin_secret")
 FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "")
 BOT_TOKEN = os.getenv("FIRE35_BOT_TOKEN", "8752856976:AAEIqm7ZLBQx5kV7hGcnsxOqnCHM-5WIw1I")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
 
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -714,10 +714,21 @@ def admin_set_password_all(
 
 # ── Profile ───────────────────────────────────────────────
 
+AVATAR_DIR = "/root/fire35/avatars"
+os.makedirs(AVATAR_DIR, exist_ok=True)
+
 @app.get("/avatar/{pid}")
 def get_avatar(pid: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.pid == pid.upper()).first()
-    if not user or not user.avatar_file_id:
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Сначала — загруженное пользователем фото
+    local_path = os.path.join(AVATAR_DIR, f"{pid.upper()}.jpg")
+    if os.path.exists(local_path):
+        with open(local_path, "rb") as f:
+            return Response(content=f.read(), media_type="image/jpeg")
+    # Fallback — Telegram avatar_file_id
+    if not user.avatar_file_id:
         raise HTTPException(status_code=404, detail="No avatar")
     try:
         r = httpx.get(
@@ -733,6 +744,24 @@ def get_avatar(pid: str, db: Session = Depends(get_db)):
         return Response(content=img.content, media_type="image/jpeg")
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch avatar")
+
+
+@app.post("/me/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+):
+    """Загрузить свой аватар (JPEG/PNG, макс 2 МБ)."""
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, "Только JPEG/PNG/WEBP")
+    data = await file.read()
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(400, "Файл слишком большой (макс 2 МБ)")
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    path = os.path.join(AVATAR_DIR, f"{user.pid}.jpg")
+    with open(path, "wb") as f:
+        f.write(data)
+    return {"status": "ok"}
 
 
 @app.post("/consent")
@@ -769,13 +798,237 @@ def get_fire_score(user: User = Depends(current_user), db: Session = Depends(get
         WHERE u.pid IS NOT NULL
     """)).fetchall()
 
-    total_members = len(accepted_rows)
-    better_count  = sum(1 for row in accepted_rows if row[1] > my_total)
-    rank = better_count + 1
+    # Точный процентиль — только реально активные пользователи (заходили хотя бы раз)
+    all_users = db.query(User).filter(
+        User.pid.isnot(None),
+        User.consent_given == True,
+        User.last_seen.isnot(None),
+    ).all()
+
+    # Считаем в одном проходе — избегаем floating-point расхождений
+    scores_map = {}
+    for u in all_users:
+        try:
+            scores_map[u.id] = calc_fire_score(u, db)["total"]
+        except Exception:
+            scores_map[u.id] = 0
+
+    # Если текущий юзер по какой-то причине не попал — добавляем
+    if user.id not in scores_map:
+        scores_map[user.id] = my_total
+
+    my_score_actual = scores_map[user.id]
+    others = [s for uid, s in scores_map.items() if uid != user.id]
+    total_members = len(others) + 1
+
+    below_count  = sum(1 for s in others if s < my_score_actual)
+    better_count = sum(1 for s in others if s > my_score_actual)
+    rank         = better_count + 1
+    # Процентиль: доля людей НИЖЕ тебя, не включая себя; максимум 99
+    percentile   = min(round(below_count / len(others) * 100), 99) if others else 0
 
     score_data["rank"]          = rank
     score_data["total_members"] = total_members
+    score_data["percentile"]    = percentile
     return score_data
+
+
+@app.get("/me/percentile")
+def me_percentile(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Точный процентиль пользователя по полному FIRE Score."""
+    my_total = calc_fire_score(user, db)["total"]
+    all_users = db.query(User).filter(User.pid.isnot(None), User.consent_given == True).all()
+    all_scores = []
+    for u in all_users:
+        try:
+            all_scores.append(calc_fire_score(u, db)["total"])
+        except Exception:
+            all_scores.append(0)
+    total = len(all_scores)
+    below = sum(1 for s in all_scores if s < my_total)
+    percentile = round(below / total * 100) if total > 0 else 0
+    return {"percentile": percentile, "total_members": total, "my_score": my_total}
+
+
+def _build_static_motivation(
+    has_report, has_skills, has_profession, contacts_count,
+    total_answers, unanswered_q, trainer_count, has_achievement,
+    percentile, my_total, total_members
+):
+    """Статические мотивационные пинки — фоллбэк если AI недоступен."""
+    messages = []
+    if not has_report:
+        messages.append({"type": "report", "icon": "📊", "title": "Нет FIRE Score",
+            "text": "Без ежемесячного отчёта ты невидим в рейтинге. 2 минуты — и ты в таблице лидеров.",
+            "action": "report", "action_label": "Заполнить отчёт"})
+    if not has_skills:
+        messages.append({"type": "skills", "icon": "🎯", "title": "Заполни свои темы",
+            "text": "Укажи темы — клуб будет знать, чем ты можешь помочь, и ты получишь +баллы.",
+            "action": "profile", "action_label": "Добавить темы"})
+    if not has_profession:
+        messages.append({"type": "profession", "icon": "💼", "title": "Кто ты в клубе?",
+            "text": "Расскажи профессию — это помогает находить нужных людей и получать релевантные вопросы.",
+            "action": "profile", "action_label": "Редактировать профиль"})
+    if contacts_count == 0:
+        messages.append({"type": "contacts", "icon": "🤝", "title": f"В клубе {total_members} человек",
+            "text": "Ты ещё ни с кем не познакомился. Знакомства — нетворкинг + баллы к FIRE Score.",
+            "action": "chats", "action_label": "Найти знакомых"})
+    if total_answers == 0 and unanswered_q > 0:
+        messages.append({"type": "help", "icon": "💡", "title": "Ты знаешь то, чего не знают другие",
+            "text": f"В клубе {unanswered_q} вопросов без ответа. Один ответ = +баллы + статус эксперта.",
+            "action": "questions", "action_label": "Ответить на вопрос"})
+    if trainer_count == 0:
+        messages.append({"type": "trainer", "icon": "🤖", "title": "Проверь финансовое мышление",
+            "text": "AI-тренажёр оценит, как ты формулируешь задачи ИИ. Первая попытка — бесплатно, 5 минут.",
+            "action": "games", "action_label": "Открыть тренажёр"})
+    if not has_achievement:
+        messages.append({"type": "achievement", "icon": "🏆", "title": "Нет достижений",
+            "text": "Поделись победой — первый миллион, погашенный кредит, новый доход. Клуб поддержит 🔥",
+            "action": "achievements", "action_label": "Добавить достижение"})
+    if not messages:
+        messages.append({"type": "rank", "icon": "📈", "title": f"Ты лучше {percentile}% клуба",
+            "text": f"FIRE Score: {my_total} баллов. Продолжай расти — рост неизбежен.",
+            "action": None, "action_label": None})
+    return messages
+
+
+@app.get("/me/motivation")
+async def me_motivation(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Персональный AI мотивационный «пинок» на основе профиля."""
+    score_data = calc_fire_score(user, db)
+    my_total = score_data["total"]
+
+    # Рейтинг среди активных участников
+    active_users = db.query(User).filter(
+        User.pid.isnot(None),
+        User.consent_given == True,
+        User.last_seen.isnot(None),
+    ).all()
+    scores_map: dict[int, float] = {}
+    for u in active_users:
+        try:
+            scores_map[u.id] = calc_fire_score(u, db)["total"]
+        except Exception:
+            scores_map[u.id] = 0
+    if user.id not in scores_map:
+        scores_map[user.id] = my_total
+    my_score_actual = scores_map[user.id]
+    total_members = len(active_users)
+
+    sorted_scores = sorted(scores_map.values(), reverse=True)
+    ranked = sorted(scores_map.items(), key=lambda x: -x[1])
+    my_rank_pos = next((i + 1 for i, (uid, _) in enumerate(ranked) if uid == user.id), total_members)
+
+    others = [s for uid, s in scores_map.items() if uid != user.id]
+    below_count = sum(1 for s in others if s < my_score_actual)
+    percentile = min(round(below_count / len(others) * 100), 99) if others else 0
+
+    top10_score = sorted_scores[9] if len(sorted_scores) >= 10 else (sorted_scores[-1] if sorted_scores else 0)
+    gap_to_top10 = max(0, round(top10_score - my_score_actual))
+
+    # Профиль
+    has_skills = db.query(UserSkill).filter(UserSkill.user_id == user.id).count() > 0
+    has_profession = bool(user.profession)
+    total_answers = db.query(QuestionAnswer).filter(QuestionAnswer.expert_user_id == user.id).count()
+    unanswered_q = db.query(ClubQuestion).filter(
+        ClubQuestion.user_id != user.id
+    ).outerjoin(QuestionAnswer, QuestionAnswer.question_id == ClubQuestion.id).filter(
+        QuestionAnswer.id == None
+    ).count()
+    contacts_count = db.query(ContactRequest).filter(
+        ContactRequest.status == "accepted",
+        (ContactRequest.from_user_id == user.id) | (ContactRequest.to_user_id == user.id)
+    ).count()
+    has_achievement = db.query(Achievement).filter(Achievement.user_id == user.id).count() > 0
+    trainer_count = db.query(TrainerAttempt).filter(TrainerAttempt.user_id == user.id).count()
+
+    # Отчёты
+    all_reports = db.query(Report).filter(Report.user_id == user.id).order_by(Report.created_at.desc()).all()
+    current_month = datetime.utcnow().strftime("%Y-%m")
+    has_current_month_report = any(r.month == current_month for r in all_reports)
+    days_since_report = None
+    if all_reports:
+        days_since_report = (datetime.utcnow() - all_reports[0].created_at).days
+
+    name = user.first_name or user.telegram_username or "участник"
+
+    static_fallback = _build_static_motivation(
+        has_report=len(all_reports) > 0,
+        has_skills=has_skills,
+        has_profession=has_profession,
+        contacts_count=contacts_count,
+        total_answers=total_answers,
+        unanswered_q=unanswered_q,
+        trainer_count=trainer_count,
+        has_achievement=has_achievement,
+        percentile=percentile,
+        my_total=round(my_score_actual),
+        total_members=total_members,
+    )
+
+    user_state = {
+        "name": name,
+        "fire_score": round(my_score_actual),
+        "rank_position": my_rank_pos,
+        "total_members": total_members,
+        "percentile": percentile,
+        "gap_to_top10": gap_to_top10,
+        "days_since_report": days_since_report,
+        "has_current_month_report": has_current_month_report,
+        "has_ever_report": len(all_reports) > 0,
+        "has_skills": has_skills,
+        "has_profession": has_profession,
+        "contacts_count": contacts_count,
+        "answers_given": total_answers,
+        "unanswered_questions": unanswered_q,
+        "trainer_attempts": trainer_count,
+        "has_achievement": has_achievement,
+    }
+
+    prompt = f"""Ты — AI-тренер клуба личных финансов FIRE35. Создай персональный мотивационный пинок для участника.
+
+Данные участника:
+{json.dumps(user_state, ensure_ascii=False, indent=2)}
+
+Контекст FIRE Score: баллы начисляются за ежемесячные отчёты (экономия, инвестиции), ответы на вопросы клуба, знакомства, заполнение профиля (навыки, профессия), достижения, AI-тренажёр.
+
+Верни JSON-массив из 1-3 сообщений. Каждое:
+{{"type":"report|skills|profession|contacts|help|trainer|achievement|rank|challenge","icon":"один эмодзи","title":"до 40 символов","text":"1-2 предложения, конкретно с цифрами","action":"report|profile|chats|questions|games|achievements|null","action_label":"текст кнопки или null"}}
+
+Правила:
+- Начни с самой критичной проблемы (нет отчёта > нет профиля > нет контактов)
+- Если нет отчёта за текущий месяц (has_current_month_report=false) — это первый пинок
+- Используй конкретные цифры: gap_to_top10, rank_position, unanswered_questions
+- Тон: дружеский, прямой, без воды. Не "рекомендуем", а "сделай сейчас"
+- Если участник в топ-20% — дай вызов на рост вместо базовых задач
+- Верни ТОЛЬКО JSON-массив, без пояснений"""
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as http_client:
+            resp = await http_client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://fire35club.duckdns.org",
+                    "X-Title": "FIRE35",
+                },
+                json={
+                    "model": "google/gemini-2.5-flash",
+                    "max_tokens": 600,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        start, end = raw.find("["), raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            messages = json.loads(raw[start:end])
+        else:
+            messages = static_fallback
+    except Exception as e:
+        print(f"[MOTIVATION] AI error: {e}", flush=True)
+        messages = static_fallback
+
+    return {"messages": messages, "percentile": percentile}
 
 
 @app.patch("/me")
@@ -1177,6 +1430,30 @@ def decline_request(
     req.status = "declined"
     db.commit()
     return {"status": "declined"}
+
+
+@app.delete("/contact/{pid}")
+def remove_contact(
+    pid: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    target = db.query(User).filter(User.pid == pid).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    req = db.query(ContactRequest).filter(
+        ContactRequest.status == "accepted",
+        (
+            (ContactRequest.from_user_id == user.id) & (ContactRequest.to_user_id == target.id)
+        ) | (
+            (ContactRequest.from_user_id == target.id) & (ContactRequest.to_user_id == user.id)
+        ),
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Знакомство не найдено")
+    db.delete(req)
+    db.commit()
+    return {"status": "removed"}
 
 
 # ── Privacy / Intro settings ──────────────────────────────
@@ -2801,6 +3078,189 @@ TRAINER_TOPICS = {
 class TrainerIn(BaseModel):
     topic_id: str
     prompt_text: str
+    custom_scenario: Optional[str] = None  # если задан — используем его вместо дефолтного
+
+
+@app.post("/ai-battle/trainer/generate-scenario")
+async def generate_personal_scenario(
+    body: dict,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """RAG-персонализация: находит вопросы клуба близкие к профилю,
+    использует их как контекст для генерации уникального сценария."""
+    topic_id = body.get("topic_id")  # опционально — если не передан, выбираем лучшую тему
+    topic = TRAINER_TOPICS.get(topic_id) if topic_id else None
+
+    # ── 1. Профиль пользователя ──────────────────────────────
+    # Явный запрос навыков — не через lazy relationship
+    user_skills = [s.skill_name for s in db.query(UserSkill).filter(UserSkill.user_id == user.id).all()]
+    # Все отчёты, свежий первый
+    all_reps = db.query(Report).filter(Report.user_id == user.id).order_by(Report.month.desc()).limit(6).all()
+    latest_rep = all_reps[0] if all_reps else None
+    reports_count = len(all_reps)
+    past_attempts_all = db.query(TrainerAttempt).filter(TrainerAttempt.user_id == user.id).all()
+    tried_topics = {a.topic_id for a in past_attempts_all}
+
+    # Финансовая картина из отчётов
+    fin_parts = []
+    fin_rag_parts = []  # для RAG-поиска — более развёрнуто
+    if latest_rep:
+        if (latest_rep.savings_pct or 0) > 0:
+            fin_parts.append(f"сбережения {latest_rep.savings_pct}% дохода")
+            fin_rag_parts.append(f"откладывает {latest_rep.savings_pct}% сбережения накопления")
+        if (latest_rep.invest_pct or 0) > 0:
+            fin_parts.append(f"инвестирует {latest_rep.invest_pct}% дохода")
+            fin_rag_parts.append(f"инвестирует {latest_rep.invest_pct}% портфель инвестиции")
+        if latest_rep.budget_yes:
+            fin_parts.append("ведёт бюджет")
+            fin_rag_parts.append("ведёт бюджет планирование расходов")
+        if not latest_rep.income_gt_expense:
+            fin_parts.append("расходы превышают доходы")
+            fin_rag_parts.append("расходы больше доходов дефицит бюджет")
+        elif latest_rep.income_gt_expense:
+            fin_rag_parts.append("доходы больше расходов профицит")
+        # Динамика сбережений
+        if len(all_reps) >= 2:
+            avg_sav = sum(r.savings_pct or 0 for r in all_reps) / len(all_reps)
+            fin_parts.append(f"средние сбережения {round(avg_sav, 1)}% за {len(all_reps)} мес.")
+
+    profile_parts = []
+    if user.profession:
+        profile_parts.append(f"профессия: {user.profession}")
+    if user_skills:
+        profile_parts.append(f"навыки: {', '.join(user_skills[:10])}")
+    if fin_parts:
+        profile_parts.append("финансы: " + ", ".join(fin_parts))
+    if reports_count:
+        profile_parts.append(f"отчётов в клубе: {reports_count}")
+    profile_str = "; ".join(profile_parts) if profile_parts else "новый участник"
+    print(f"[RAG-SCENARIO] user={user.pid} profile_str={profile_str!r}", flush=True)
+
+    # ── 2. Если тема не передана — выбираем ту, где меньше попыток или нет совсем ──
+    if not topic:
+        untried = [tid for tid in TRAINER_TOPICS if tid not in tried_topics]
+        topic_id = untried[0] if untried else list(TRAINER_TOPICS.keys())[0]
+        topic = TRAINER_TOPICS[topic_id]
+
+    # ── 3. RAG: ищем релевантные вопросы клуба через эмбединги ──
+    # Строим максимально богатый search_text: профессия + навыки + финансы + тема
+    skill_text = " ".join(user_skills[:10]) if user_skills else ""
+    fin_rag_text = " ".join(fin_rag_parts) if fin_rag_parts else ""
+    profession_text = user.profession or ""
+    search_text = f"{profession_text} {skill_text} {fin_rag_text} {topic['title']} {topic_id}".strip()
+    print(f"[RAG-SCENARIO] search_text={search_text!r}", flush=True)
+
+    rag_context = ""
+    try:
+        model = get_embed_model()
+        query_emb = model.encode(search_text, normalize_embeddings=True).astype("float32")
+
+        # Берём все эмбединги вопросов клуба
+        all_qe = db.query(QuestionEmbedding).all()
+        if all_qe:
+            import numpy as np
+            sims = []
+            for qe in all_qe:
+                stored = np.frombuffer(qe.embedding, dtype=np.float32)
+                sim = float(np.dot(query_emb, stored))
+                sims.append((sim, qe.question_id))
+            sims.sort(reverse=True)
+            top_qids = [qid for _, qid in sims[:5]]
+
+            # Загружаем топ вопросы + лучшие ответы
+            rag_lines = []
+            for qid in top_qids:
+                q = db.query(ClubQuestion).filter(ClubQuestion.id == qid).first()
+                if not q:
+                    continue
+                best_ans = db.query(QuestionAnswer).filter(
+                    QuestionAnswer.question_id == qid,
+                    QuestionAnswer.is_useful == True,
+                ).first()
+                if not best_ans:
+                    best_ans = db.query(QuestionAnswer).filter(
+                        QuestionAnswer.question_id == qid,
+                    ).order_by(QuestionAnswer.id.desc()).first()
+                ans_text = best_ans.answer[:150] if best_ans else "без ответа"
+                rag_lines.append(f"• Вопрос: {q.question[:120]} → {ans_text}")
+            if rag_lines:
+                rag_context = "РЕАЛЬНЫЕ ВОПРОСЫ УЧАСТНИКОВ КЛУБА (используй как вдохновение):\n" + "\n".join(rag_lines)
+    except Exception:
+        pass  # если модель не загружена — работаем без RAG
+
+    # ── 4. История попыток по теме ────────────────────────────
+    past = db.query(TrainerAttempt).filter(
+        TrainerAttempt.user_id == user.id,
+        TrainerAttempt.topic_id == topic_id,
+    ).order_by(TrainerAttempt.created_at.desc()).limit(3).all()
+    difficulty = "базовый"
+    if len(past) >= 3:
+        avg = sum(a.score for a in past) / len(past)
+        difficulty = "продвинутый (усложни задачу)" if avg > 60 else "средний"
+    elif len(past) >= 1:
+        difficulty = "средний"
+
+    # ── 5. Генерируем сценарий ────────────────────────────────
+    gen_prompt = f"""Ты создаёшь персонализированное задание для финансового тренажёра промпт-инжиниринга.
+
+ТЕМА: {topic['title']}
+УРОВЕНЬ СЛОЖНОСТИ: {difficulty}
+ПРОФИЛЬ УЧАСТНИКА: {profile_str}
+ПОПЫТОК ПО ТЕМЕ: {len(past)}
+
+{rag_context}
+
+ТРЕБОВАНИЯ:
+- Используй ТОЛЬКО данные из профиля выше — никаких выдуманных цифр, предположений или типичных шаблонов
+- Если данных нет (пустые поля) — не упоминай их вообще
+- Вставляй реальные цифры прямо в текст: "ты откладываешь X%", "инвестируешь Y%"
+- Профессия и навыки должны быть в контексте задачи
+- НЕ копируй и не перефразируй стандартный сценарий: "{topic['scenario']}"
+- 2-3 предложения. Последнее: "Напиши промпт для AI-[роль]."
+- Только текст, без markdown и пояснений
+
+Сценарий:"""
+
+    print(f"[RAG-SCENARIO] gen_prompt[:400]={gen_prompt[:400]!r}", flush=True)
+    scenario = None
+    try:
+        async with httpx.AsyncClient(timeout=40) as http_client:
+            resp = await http_client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                         "HTTP-Referer": "https://fire35club.duckdns.org", "X-Title": "FIRE35"},
+                json={"model": "google/gemini-2.5-flash", "max_tokens": 300,
+                      "messages": [{"role": "user", "content": gen_prompt}]},
+            )
+        rj = resp.json()
+        print(f"[RAG-SCENARIO] API status={resp.status_code} keys={list(rj.keys())} body={str(rj)[:200]}", flush=True)
+        scenario = rj["choices"][0]["message"]["content"].strip()
+        scenario = scenario.strip('"\'').replace("**", "").replace("##", "").replace("*", "")
+        print(f"[RAG-SCENARIO] RESULT={scenario!r}", flush=True)
+    except Exception as e:
+        print(f"[RAG-SCENARIO] ERROR={e!r}", flush=True)
+    if not scenario:
+        # Финальный fallback с данными профиля
+        fin_str = "; ".join(fin_parts) if fin_parts else ""
+        skills_str = ", ".join(user_skills[:5]) if user_skills else ""
+        scenario = topic["scenario"]
+        if user.profession:
+            scenario = f"Ты — {user.profession}"
+            if skills_str:
+                scenario += f" ({skills_str})"
+            if fin_str:
+                scenario += f". {fin_str}."
+            scenario += " " + topic["scenario"]
+
+    return {
+        "scenario": scenario,
+        "topic_id": topic_id,
+        "title": topic["title"],
+        "criteria": topic["criteria"],
+        "is_personalized": True,
+        "rag_used": bool(rag_context),
+    }
 
 
 @app.post("/ai-battle/trainer")
@@ -2822,10 +3282,29 @@ async def ai_battle_trainer(
     )
     total_max = sum(c["max"] for c in topic["criteria"])
 
+    # Профиль пользователя для персонализации
+    user_skills = [s.skill_name for s in user.skills_list] if user.skills_list else []
+    latest_rep = db.query(Report).filter(Report.user_id == user.id).order_by(Report.month.desc()).first()
+    profile_ctx = f"Профессия участника: {user.profession or 'не указана'}."
+    if user_skills:
+        profile_ctx += f" Темы/навыки: {', '.join(user_skills[:5])}."
+    if latest_rep:
+        invest_info = []
+        if latest_rep.invest_pct: invest_info.append(f"инвестирует {latest_rep.invest_pct}% дохода")
+        if latest_rep.budget_yes: invest_info.append("ведёт бюджет")
+        if invest_info:
+            profile_ctx += f" Финансовый профиль: {', '.join(invest_info)}."
+
+    # Используем кастомный сценарий если передан, иначе стандартный
+    scenario_text = body.custom_scenario.strip() if body.custom_scenario else topic["scenario"]
+
     eval_prompt = f"""Ты — строгий судья промпт-инжиниринга. Оцени промпт участника для темы "{topic['title']}".
 
+ПРОФИЛЬ УЧАСТНИКА (учитывай при оценке релевантности):
+{profile_ctx}
+
 ЗАДАНИЕ ДЛЯ УЧАСТНИКА:
-{topic['scenario']}
+{scenario_text}
 
 ПРОМПТ УЧАСТНИКА:
 {body.prompt_text}

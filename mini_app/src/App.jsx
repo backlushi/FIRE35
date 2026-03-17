@@ -27,6 +27,7 @@ export default function App() {
   const [consentSaving, setConsentSaving]   = useState(false);
   const [unreadChats, setUnreadChats]       = useState(0);
   const [membersSubTab, setMembersSubTab]   = useState(null);
+  const [motivation, setMotivation]         = useState(null); // { icon, title, text, action, action_label }
   const pingRef = useRef(null);
   const unreadRef = useRef(null);
 
@@ -48,6 +49,18 @@ export default function App() {
     fetchUnread();
     unreadRef.current = setInterval(fetchUnread, 15_000);
     return () => clearInterval(unreadRef.current);
+  }, [user]);
+
+  // Мотивационный пинок — один раз при входе, через 2 сек
+  useEffect(() => {
+    if (!user) return;
+    const timer = setTimeout(() => {
+      api.get("/me/motivation").then(r => {
+        const msgs = r.data.messages;
+        if (msgs?.length > 0) setMotivation(msgs[0]);
+      }).catch(() => {});
+    }, 2000);
+    return () => clearTimeout(timer);
   }, [user]);
 
   function showToast(msg, ms = 3000) {
@@ -188,7 +201,7 @@ export default function App() {
   return (
     <div className="app">
       <div className="content">
-        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} onGoToChats={() => { setMembersSubTab("chats"); setTab("members"); }} />}
+        {tab === "profile"      && <ProfilePage user={user} setUser={setUser} unreadChats={unreadChats} onGoToChats={() => { setMembersSubTab("chats"); setTab("members"); }} />}
         {tab === "members"      && <MembersPage user={user} initialSubTab={membersSubTab} onSubTabChange={() => setMembersSubTab(null)} />}
         {tab === "questions"    && <QuestionsPage user={user} />}
         {tab === "achievements" && <AchievementsPage user={user} />}
@@ -230,6 +243,57 @@ export default function App() {
           onClick={() => { setToast(null); setTab("profile"); }}
         >
           {toast}
+        </div>
+      )}
+
+      {/* ── Мотивационный попап ── */}
+      {motivation && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+          zIndex: 2000, display: "flex", alignItems: "flex-end",
+        }} onClick={() => setMotivation(null)}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: "100%", background: "#fff",
+              borderRadius: "18px 18px 0 0",
+              padding: "20px 20px 28px",
+              boxShadow: "0 -4px 24px rgba(0,0,0,0.12)",
+              animation: "slideUp .25s ease",
+            }}
+          >
+            <div style={{ fontSize: 36, marginBottom: 8, textAlign: "center" }}>{motivation.icon}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a2e", textAlign: "center", marginBottom: 8 }}>
+              {motivation.title}
+            </div>
+            <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, textAlign: "center", marginBottom: 18 }}>
+              {motivation.text}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {motivation.action_label && (
+                <button
+                  className="btn btn-primary"
+                  style={{ flex: 1, fontSize: 13 }}
+                  onClick={() => {
+                    setMotivation(null);
+                    const actionMap = { report: "report", profile: "profile", chats: "members", questions: "questions", achievements: "profile", games: "profile" };
+                    const t = actionMap[motivation.action] || "profile";
+                    setTab(t);
+                    if (t === "members") setMembersSubTab("chats");
+                  }}
+                >
+                  {motivation.action_label}
+                </button>
+              )}
+              <button
+                className="btn btn-secondary"
+                style={{ flex: motivation.action_label ? "0 0 80px" : 1, fontSize: 13 }}
+                onClick={() => setMotivation(null)}
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

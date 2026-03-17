@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
 import RecoPage from "./RecoPage";
+import SmartAvatar from "../components/SmartAvatar";
 
 const AVATAR_COLORS = [
   "#FF6B6B","#4ECDC4","#45B7D1","#FFA07A",
@@ -151,8 +152,9 @@ function InlineChat({ pid, myPid }) {
 export default function ChatsPage({ user, onOpenDetail }) {
   const [chats, setChats]       = useState([]);
   const [loading, setLoading]   = useState(true);
-  const [selected, setSelected] = useState(null); // pid выбранного друга
+  const [selected, setSelected] = useState(null);
   const [showReco, setShowReco] = useState(false);
+  const [ctxMenu, setCtxMenu]   = useState(null); // { pid, x, y }
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -161,11 +163,18 @@ export default function ChatsPage({ user, onOpenDetail }) {
     return () => clearInterval(pollRef.current);
   }, []);
 
+  // Закрывать меню при клике вне
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [ctxMenu]);
+
   async function loadChats() {
     try {
       const res = await api.get("/chats");
       setChats(res.data);
-      // Если никто не выбран — выбираем первого с сообщениями
       if (!selected) {
         const first = res.data.find(c => c.last_message);
         if (first) setSelected(first.pid);
@@ -174,10 +183,44 @@ export default function ChatsPage({ user, onOpenDetail }) {
     setLoading(false);
   }
 
+  async function removeContact(pid) {
+    try {
+      await api.delete(`/contact/${pid}`);
+      setChats(cs => cs.filter(c => c.pid !== pid));
+      if (selected === pid) setSelected(null);
+    } catch {}
+    setCtxMenu(null);
+  }
+
   const selectedChat = chats.find(c => c.pid === selected);
 
   return (
-    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }} onClick={() => setCtxMenu(null)}>
+
+      {/* ── Контекстное меню ── */}
+      {ctxMenu && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: "fixed", zIndex: 1000,
+            top: ctxMenu.y, left: ctxMenu.x,
+            background: "#fff", borderRadius: 10,
+            boxShadow: "0 4px 20px rgba(0,0,0,0.18)",
+            padding: "4px 0", minWidth: 160,
+          }}
+        >
+          <div
+            onClick={() => removeContact(ctxMenu.pid)}
+            style={{
+              padding: "10px 16px", cursor: "pointer",
+              fontSize: 13, color: "#e76f51",
+              display: "flex", alignItems: "center", gap: 8,
+            }}
+          >
+            🗑 Удалить из знакомых
+          </div>
+        </div>
+      )}
 
       {/* ── Левая колонка: список друзей ── */}
       <div style={{
@@ -221,6 +264,13 @@ export default function ChatsPage({ user, onOpenDetail }) {
               chat={c}
               active={selected === c.pid && !showReco}
               onClick={() => { setSelected(c.pid); setShowReco(false); }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const x = Math.min(e.clientX, window.innerWidth - 170);
+                const y = Math.min(e.clientY, window.innerHeight - 60);
+                setCtxMenu({ pid: c.pid, x, y });
+              }}
             />
           ))}
         </div>
@@ -247,14 +297,7 @@ export default function ChatsPage({ user, onOpenDetail }) {
               display: "flex", alignItems: "center", gap: 8,
               background: "#fff", flexShrink: 0,
             }}>
-              <div style={{
-                width: 30, height: 30, borderRadius: "50%",
-                background: pidColor(selected), color: "#fff",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 13, fontWeight: 700, flexShrink: 0,
-              }}>
-                {(selectedChat?.first_name || "?")[0].toUpperCase()}
-              </div>
+              <SmartAvatar pid={selected} name={selectedChat?.first_name} size={30} online={selectedChat?.is_online} />
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2 }}>
                   {selectedChat?.first_name} {selectedChat?.last_name}
@@ -282,13 +325,28 @@ export default function ChatsPage({ user, onOpenDetail }) {
 }
 
 // ── Строка друга в левой колонке ──
-function FriendRow({ chat, active, onClick }) {
+function FriendRow({ chat, active, onClick, onContextMenu }) {
   const initial = (chat.first_name || "?")[0].toUpperCase();
   const hasUnread = chat.unread > 0;
+  const longPressRef = useRef(null);
+
+  function handleTouchStart(e) {
+    longPressRef.current = setTimeout(() => {
+      const touch = e.touches[0];
+      onContextMenu({ preventDefault: () => {}, stopPropagation: () => {}, clientX: touch.clientX, clientY: touch.clientY });
+    }, 500);
+  }
+  function handleTouchEnd() {
+    clearTimeout(longPressRef.current);
+  }
 
   return (
     <div
       onClick={onClick}
+      onContextMenu={onContextMenu}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onTouchMove={handleTouchEnd}
       style={{
         display: "flex", alignItems: "center", gap: 8,
         padding: "8px 8px",
@@ -299,35 +357,7 @@ function FriendRow({ chat, active, onClick }) {
       }}
     >
       {/* Аватар */}
-      <div style={{ position: "relative", flexShrink: 0 }}>
-        <div style={{
-          width: 38, height: 38, borderRadius: "50%",
-          background: pidColor(chat.pid), color: "#fff",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 15, fontWeight: 700,
-        }}>
-          {initial}
-        </div>
-        {chat.is_online && (
-          <span style={{
-            position: "absolute", bottom: 0, right: 0,
-            width: 10, height: 10, borderRadius: "50%",
-            background: "#2a9d8f", border: "2px solid #fff",
-          }} />
-        )}
-        {hasUnread && (
-          <span style={{
-            position: "absolute", top: -2, right: -2,
-            background: "#e76f51", color: "#fff",
-            fontSize: 9, fontWeight: 700,
-            borderRadius: "50%", minWidth: 16, height: 16,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: "0 3px",
-          }}>
-            {chat.unread > 9 ? "9+" : chat.unread}
-          </span>
-        )}
-      </div>
+      <SmartAvatar pid={chat.pid} name={chat.first_name} size={38} online={chat.is_online} unread={chat.unread || 0} />
 
       {/* Имя + навыки */}
       <div style={{ flex: 1, minWidth: 0 }}>

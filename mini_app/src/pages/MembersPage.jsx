@@ -4,6 +4,7 @@ import api from "../api";
 import ChatPage from "./ChatPage";
 import ChatsPage from "./ChatsPage";
 import AchievementsPage from "./AchievementsPage";
+import SmartAvatar from "../components/SmartAvatar";
 
 // ─── Helpers ──────────────────────────────────────────────
 const AVATAR_COLORS = [
@@ -17,20 +18,7 @@ function pidColor(pid) {
 }
 
 function Avatar({ pid, name, size = 38, online = false }) {
-  const initial = (name || pid || "?")[0].toUpperCase();
-  return (
-    <div style={{ position: "relative", flexShrink: 0, width: size, height: size }}>
-      <div
-        className="member-avatar"
-        style={{ background: pidColor(pid), width: size, height: size, fontSize: size * 0.42 }}
-      >
-        {initial}
-      </div>
-      {online && (
-        <span className="online-dot" />
-      )}
-    </div>
-  );
+  return <SmartAvatar pid={pid} name={name} size={size} online={online} />;
 }
 
 // ─── Detail View ──────────────────────────────────────────

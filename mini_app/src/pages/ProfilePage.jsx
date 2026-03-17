@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import api from "../api";
 import MonopolyGame from "./MonopolyGame";
 import AiBattlePage from "./AiBattlePage";
@@ -52,7 +52,7 @@ const TOPICS = [
 ];
 
 // ── main ────────────────────────────────────────────────────
-export default function ProfilePage({ user, setUser, onGoToChats }) {
+ export default function ProfilePage({ user, setUser, onGoToChats, unreadChats = 0 }) {
   const [fireScore, setFireScore]   = useState(null);
   const [doneTopic, setDoneTopic]   = useState(new Set());
   const [questions, setQuestions]   = useState([]);
@@ -193,7 +193,7 @@ export default function ProfilePage({ user, setUser, onGoToChats }) {
 
       {/* ══ ШАПКА ══ */}
       <div className="pf-header">
-        <AvatarImg user={user} />
+        <AvatarImg user={user} onUploaded={() => {}} />
         <div className="pf-header-info">
           <div className="pf-name">{user.first_name || user.pid}</div>
           {user.profession && <div className="pf-profession">{user.profession}</div>}
@@ -209,9 +209,21 @@ export default function ProfilePage({ user, setUser, onGoToChats }) {
               borderRadius: 20, padding: "5px 12px",
               fontSize: 12, fontWeight: 600, cursor: "pointer",
               display: "inline-flex", alignItems: "center", gap: 5,
+              position: "relative",
             }}
           >
-            💬 Написать друзьям
+            💬 Знакомства
+            {unreadChats > 0 && (
+              <span style={{
+                background: "#e76f51", color: "#fff",
+                borderRadius: "50%", fontSize: 9, fontWeight: 700,
+                minWidth: 16, height: 16,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                padding: "0 3px", marginLeft: 2,
+              }}>
+                {unreadChats > 9 ? "9+" : unreadChats}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -357,6 +369,15 @@ export default function ProfilePage({ user, setUser, onGoToChats }) {
                   <div className="pf-dash-level">{fireScore.level}</div>
                   <div className="pf-dash-total">{fireScore.total}</div>
                 </div>
+                {fireScore.percentile != null && (
+                  <div style={{
+                    fontSize: 11, color: "#2a9d8f", fontWeight: 600,
+                    background: "#e8f5e9", borderRadius: 8, padding: "3px 8px",
+                    marginBottom: 6, textAlign: "center",
+                  }}>
+                    🏅 Ты лучше {fireScore.percentile}% участников клуба
+                  </div>
+                )}
                 <div className="fire-score-bars">
                   <FireBar label="Помощь"     value={fireScore.help}       cap={fireScore.help_cap}       color="#2a9d8f" />
                   <FireBar label="Обучение"   value={fireScore.learning}   cap={fireScore.learning_cap}   color="#e9c46a" />
@@ -604,11 +625,50 @@ function GamesSection({ user }) {
 }
 
 const API_BASE = "https://fire35club.duckdns.org/fire35";
-function AvatarImg({ user }) {
+function AvatarImg({ user, onUploaded }) {
   const [broken, setBroken] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [cacheBust, setCacheBust] = useState(Date.now());
+  const inputRef = useRef(null);
   const name = user.first_name || user.pid;
-  if (!broken)
-    return <img className="avatar large avatar-photo" src={`${API_BASE}/avatar/${user.pid}`}
-      alt={name} onError={()=>setBroken(true)} />;
-  return <div className="avatar large">{name[0].toUpperCase()}</div>;
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post("/me/avatar", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setBroken(false);
+      setCacheBust(Date.now());
+      onUploaded?.();
+    } catch {}
+    setUploading(false);
+  }
+
+  return (
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      {!broken
+        ? <img className="avatar large avatar-photo"
+            src={`${API_BASE}/avatar/${user.pid}?t=${cacheBust}`}
+            alt={name} onError={() => setBroken(true)} />
+        : <div className="avatar large">{name[0].toUpperCase()}</div>
+      }
+      <input ref={inputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        title="Сменить фото"
+        style={{
+          position: "absolute", bottom: 0, right: 0,
+          width: 22, height: 22, borderRadius: "50%",
+          background: uploading ? "#aaa" : "#2a9d8f",
+          border: "2px solid #fff", color: "#fff",
+          fontSize: 11, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >{uploading ? "…" : "📷"}</button>
+    </div>
+  );
 }

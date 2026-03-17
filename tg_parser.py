@@ -23,11 +23,14 @@ import argparse
 import sys
 import os
 
+from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.tl.types import ChannelParticipantsSearch
+from telethon.tl.types import User as TgUser
 
-API_ID   = 33972361
-API_HASH = "da9981e99e505c8dadcd3dfe06ed2f12"
+load_dotenv()
+
+API_ID   = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
 SESSION  = "fire35_session"
 
 
@@ -41,26 +44,36 @@ def get_db_session():
 
 
 async def fetch_members(chat: str):
-    """Вернуть список участников чата."""
+    """Собирает уникальных участников через историю сообщений (без прав админа)."""
     client = TelegramClient(SESSION, API_ID, API_HASH)
     await client.start()
 
-    members = []
+    seen = {}
     try:
-        entity = await client.get_entity(chat)
-        async for user in client.iter_participants(entity):
-            members.append({
-                "id":         user.id,
-                "username":   user.username,
-                "first_name": user.first_name or "",
-                "last_name":  user.last_name or "",
-                "phone":      getattr(user, "phone", None),
-                "bot":        user.bot,
-            })
+        try:
+            chat_id = int(chat)
+        except ValueError:
+            chat_id = chat
+        entity = await client.get_entity(chat_id)
+        print(f"[ok] Подключился к: {getattr(entity, 'title', chat)}")
+        print("[..] Читаю историю сообщений (может занять минуту)...")
+        async for msg in client.iter_messages(entity, limit=5000):
+            sender = msg.sender
+            if not sender or not isinstance(sender, TgUser):
+                continue
+            if sender.id in seen or sender.bot:
+                continue
+            seen[sender.id] = {
+                "id":         sender.id,
+                "username":   sender.username,
+                "first_name": sender.first_name or "",
+                "last_name":  sender.last_name or "",
+                "bot":        sender.bot,
+            }
     finally:
         await client.disconnect()
 
-    return members
+    return list(seen.values())
 
 
 async def cmd_list(chat: str):
